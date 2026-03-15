@@ -16,6 +16,8 @@ import type {
   TempUnschedulableStatus,
   AdminDataPayload,
   AdminDataImportResult,
+  AdminOpenAIAuthImportSource,
+  AdminOpenAIAuthImportResult,
   CheckMixedChannelRequest,
   CheckMixedChannelResponse
 } from '@/types'
@@ -527,6 +529,29 @@ export async function importData(payload: {
   return data
 }
 
+export async function importOpenAIAuthItems(
+  items: AdminOpenAIAuthImportSource[]
+): Promise<AdminOpenAIAuthImportResult> {
+  const { data } = await apiClient.post<AdminOpenAIAuthImportResult>(
+    '/admin/accounts/openai-auths/import',
+    items
+  )
+  return data
+}
+
+export async function importOpenAIAuthFile(
+  file: File
+): Promise<AdminOpenAIAuthImportResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const { data } = await apiClient.post<AdminOpenAIAuthImportResult>(
+    '/admin/accounts/openai-auths/import-file',
+    formData
+  )
+  return data
+}
+
 /**
  * Get Antigravity default model mapping from backend
  * @returns Default model mapping (from -> to)
@@ -652,6 +677,8 @@ export const accountsAPI = {
   syncFromCrs,
   exportData,
   importData,
+  importOpenAIAuthItems,
+  importOpenAIAuthFile,
   getAntigravityDefaultModelMapping,
   batchClearError,
   batchRefresh

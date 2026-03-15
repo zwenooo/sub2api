@@ -948,6 +948,20 @@ export interface AdminDataImportResult {
   errors?: AdminDataImportError[]
 }
 
+export type AdminOpenAIAuthImportSource = Record<string, unknown>
+
+export interface AdminOpenAIAuthImportError {
+  index: number
+  name?: string
+  message: string
+}
+
+export interface AdminOpenAIAuthImportResult {
+  account_created: number
+  account_failed: number
+  errors?: AdminOpenAIAuthImportError[]
+}
+
 // ==================== Usage & Redeem Types ====================
 
 export type RedeemCodeType = 'balance' | 'concurrency' | 'subscription' | 'invitation'
