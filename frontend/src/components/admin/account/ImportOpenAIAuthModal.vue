@@ -10,7 +10,8 @@
       <div class="space-y-2 text-sm text-gray-600 dark:text-dark-300">
         <div>{{ t('admin.accounts.openAIAuthImportHint') }}</div>
         <div class="rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs dark:border-dark-700 dark:bg-dark-800">
-          {{ t('admin.accounts.openAIAuthImportFormatHint') }}
+          <div>{{ t('admin.accounts.openAIAuthImportFormatHint') }}</div>
+          <pre class="mt-2 whitespace-pre-wrap break-all">{{ openAIAuthImportExample }}</pre>
         </div>
       </div>
 
@@ -141,6 +142,21 @@ const emit = defineEmits<Emits>()
 
 const { t } = useI18n()
 const appStore = useAppStore()
+
+const openAIAuthImportExample = JSON.stringify(
+  [
+    {
+      tokens: {
+        access_token: 'example_access_token',
+        refresh_token: 'example_refresh_token',
+        id_token: 'example_id_token',
+        account_id: 'example_account_id'
+      }
+    }
+  ],
+  null,
+  2
+)
 
 const mode = ref<ImportMode>('file')
 const importing = ref(false)
