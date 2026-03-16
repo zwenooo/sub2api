@@ -1,0 +1,192 @@
+name: Deploy To VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Deploy mode
+        required: true
+        type: choice
+        default: pull-restart
+        options:
+          - pull-restart
+          - start
+          - restart
+      image:
+        description: Optional image ref or tag override
+        required: false
+        type: string
+      deploy_path:
+        description: Remote deploy path
+        required: false
+        default: /opt/sub2api
+        type: string
+      compose_file:
+        description: Compose file name on remote host
+        required: false
+        default: docker-compose.actions.yml
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Prepare deploy metadata
+        id: prep
+        shell: bash
+        run: |
+          repo="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          default_image="ghcr.io/${repo}:latest"
+          input_image='${{ github.event.inputs.image }}'
+
+          if [[ -z "$input_image" ]]; then
+            image="$default_image"
+          elif [[ "$input_image" == *"/"* || "$input_image" == *":"* || "$input_image" == *"@"* ]]; then
+            image="$input_image"
+          else
+            image="ghcr.io/${repo}:${input_image}"
+          fi
+
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "vps_port=${{ vars.SUB2API_VPS_PORT || '22' }}" >> "$GITHUB_OUTPUT"
+          echo "server_port=${{ vars.SUB2API_SERVER_PORT || '8080' }}" >> "$GITHUB_OUTPUT"
+          echo "bind_host=${{ vars.SUB2API_BIND_HOST || '0.0.0.0' }}" >> "$GITHUB_OUTPUT"
+          echo "timezone=${{ vars.SUB2API_TZ || 'Asia/Shanghai' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SUB2API_VPS_SSH_KEY }}
+
+      - name: Add VPS host key
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${{ steps.prep.outputs.vps_port }}" -H "${{ secrets.SUB2API_VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Render runtime env file
+        shell: bash
+        env:
+          ADMIN_EMAIL: ${{ secrets.SUB2API_ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.SUB2API_ADMIN_PASSWORD }}
+          JWT_SECRET: ${{ secrets.SUB2API_JWT_SECRET }}
+          TOTP_ENCRYPTION_KEY: ${{ secrets.SUB2API_TOTP_ENCRYPTION_KEY }}
+        run: |
+          mkdir -p .deploy-tmp
+          umask 077
+          cat > .deploy-tmp/sub2api.env <<EOF
+SUB2API_IMAGE=${{ steps.prep.outputs.image }}
+BIND_HOST=${{ steps.prep.outputs.bind_host }}
+SERVER_PORT=${{ steps.prep.outputs.server_port }}
+SERVER_MODE=release
+RUN_MODE=standard
+TZ=${{ steps.prep.outputs.timezone }}
+POSTGRES_USER=sub2api
+POSTGRES_PASSWORD=Wangge667
+POSTGRES_DB=sub2api
+DATABASE_HOST=postgres
+DATABASE_PORT=5432
+DATABASE_USER=sub2api
+DATABASE_PASSWORD=Wangge667
+DATABASE_DBNAME=sub2api
+DATABASE_SSLMODE=disable
+DATABASE_MAX_OPEN_CONNS=50
+DATABASE_MAX_IDLE_CONNS=10
+DATABASE_CONN_MAX_LIFETIME_MINUTES=30
+DATABASE_CONN_MAX_IDLE_TIME_MINUTES=5
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_PASSWORD=Wangge667
+REDIS_DB=0
+REDIS_POOL_SIZE=1024
+REDIS_MIN_IDLE_CONNS=10
+REDIS_ENABLE_TLS=false
+ADMIN_EMAIL=${ADMIN_EMAIL}
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+JWT_SECRET=${JWT_SECRET}
+JWT_EXPIRE_HOUR=24
+TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}
+LOG_LEVEL=info
+LOG_FORMAT=console
+LOG_SERVICE_NAME=sub2api
+LOG_ENV=production
+LOG_CALLER=true
+LOG_STACKTRACE_LEVEL=error
+LOG_OUTPUT_TO_STDOUT=true
+LOG_OUTPUT_TO_FILE=true
+LOG_OUTPUT_FILE_PATH=/app/data/logs/sub2api.log
+LOG_ROTATION_MAX_SIZE_MB=100
+LOG_ROTATION_MAX_BACKUPS=10
+LOG_ROTATION_MAX_AGE_DAYS=7
+LOG_ROTATION_COMPRESS=true
+LOG_ROTATION_LOCAL_TIME=true
+DOCKER_LOG_MAX_SIZE=20m
+DOCKER_LOG_MAX_FILE=5
+EOF
+
+      - name: Prepare remote directory
+        shell: bash
+        run: |
+          ssh -p "${{ steps.prep.outputs.vps_port }}" "${{ secrets.SUB2API_VPS_USER }}@${{ secrets.SUB2API_VPS_HOST }}" \
+            "mkdir -p '${{ github.event.inputs.deploy_path }}' '${{ github.event.inputs.deploy_path }}/data' '${{ github.event.inputs.deploy_path }}/postgres_data' '${{ github.event.inputs.deploy_path }}/redis_data'"
+
+      - name: Upload deploy files
+        shell: bash
+        run: |
+          scp -P "${{ steps.prep.outputs.vps_port }}" \
+            rerun.sh \
+            docker-compose.actions.yml \
+            .env.actions.example \
+            .deploy-tmp/sub2api.env \
+            "${{ secrets.SUB2API_VPS_USER }}@${{ secrets.SUB2API_VPS_HOST }}:${{ github.event.inputs.deploy_path }}/"
+
+      - name: Deploy on VPS
+        shell: bash
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          DEPLOY_PATH: ${{ github.event.inputs.deploy_path }}
+          COMPOSE_FILE_NAME: ${{ github.event.inputs.compose_file }}
+          GHCR_USERNAME: ${{ secrets.SUB2API_GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.SUB2API_GHCR_TOKEN }}
+        run: |
+          ssh -p "${{ steps.prep.outputs.vps_port }}" "${{ secrets.SUB2API_VPS_USER }}@${{ secrets.SUB2API_VPS_HOST }}" \
+            bash -s -- "${MODE}" "${DEPLOY_PATH}" "${COMPOSE_FILE_NAME}" "${GHCR_USERNAME}" "${GHCR_TOKEN}" <<'EOF'
+set -euo pipefail
+
+MODE="$1"
+DEPLOY_PATH="$2"
+COMPOSE_FILE_NAME="$3"
+GHCR_USERNAME="$4"
+GHCR_TOKEN="$5"
+
+cd "${DEPLOY_PATH}"
+chmod +x rerun.sh
+install -m 600 sub2api.env data/.env
+rm -f sub2api.env
+
+if [[ -n "${GHCR_USERNAME}" && -n "${GHCR_TOKEN}" ]]; then
+  printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
+fi
+
+case "${MODE}" in
+  pull-restart)
+    COMPOSE_FILE="${COMPOSE_FILE_NAME}" ./rerun.sh
+    ;;
+  start)
+    COMPOSE_FILE="${COMPOSE_FILE_NAME}" ./rerun.sh --start
+    ;;
+  restart)
+    COMPOSE_FILE="${COMPOSE_FILE_NAME}" ./rerun.sh --restart
+    ;;
+  *)
+    echo "Unsupported deploy mode: ${MODE}" >&2
+    exit 1
+    ;;
+esac
+EOF
