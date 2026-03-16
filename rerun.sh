@@ -4,6 +4,9 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_dir"
 
+container_uid=1000
+container_gid=1000
+
 temp_files=()
 cleanup() {
   if ((${#temp_files[@]})); then
@@ -11,6 +14,23 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+ensure_runtime_permissions() {
+  mkdir -p ./data
+
+  if ((EUID == 0)); then
+    chown -R "${container_uid}:${container_gid}" ./data
+    return 0
+  fi
+
+  local owner_group
+  owner_group="$(stat -c '%u:%g' ./data)"
+  if [[ "$owner_group" != "${container_uid}:${container_gid}" ]]; then
+    echo "Directory ./data must be owned by ${container_uid}:${container_gid} so the container can write /app/data/config.yaml." >&2
+    echo "Run as root once: chown -R ${container_uid}:${container_gid} ./data" >&2
+    exit 1
+  fi
+}
 
 extract_compose_sub2api_image() {
   awk '
@@ -122,6 +142,8 @@ if [[ ! -f "./data/.env" ]]; then
   echo "Missing ./data/.env. Copy .env.actions.example to ./data/.env first." >&2
   exit 1
 fi
+
+ensure_runtime_permissions
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   compose_cmd=(docker compose)
