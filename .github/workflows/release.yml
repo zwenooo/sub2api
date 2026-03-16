@@ -16,10 +16,10 @@ on:
         type: boolean
         default: false
 
-# 环境变量：合并 workflow_dispatch 输入和 repository variable
-# tag push 触发时读取 vars.SIMPLE_RELEASE，workflow_dispatch 时使用输入参数
+# 环境变量：tag push 默认走 simple release，仅构建 Linux amd64 GHCR 镜像。
+# workflow_dispatch 仍可通过输入参数或仓库变量切换。
 env:
-  SIMPLE_RELEASE: ${{ github.event.inputs.simple_release == 'true' || vars.SIMPLE_RELEASE == 'true' }}
+  SIMPLE_RELEASE: ${{ github.event_name == 'push' || github.event.inputs.simple_release == 'true' || vars.SIMPLE_RELEASE == 'true' }}
 
 permissions:
   contents: write
@@ -119,6 +119,7 @@ jobs:
 
       # Docker setup for GoReleaser
       - name: Set up QEMU
+        if: ${{ env.SIMPLE_RELEASE != 'true' }}
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
