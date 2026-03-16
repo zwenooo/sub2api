@@ -32,6 +32,60 @@ ensure_runtime_permissions() {
   fi
 }
 
+read_env_value() {
+  local key="$1"
+
+  awk -F= -v target="$key" '
+    /^[ \t]*#/ { next }
+    /^[ \t]*$/ { next }
+    index($0, "=") == 0 { next }
+    {
+      raw_key=$1
+      sub(/^[ \t]+/, "", raw_key)
+      sub(/[ \t]+$/, "", raw_key)
+      if (raw_key != target) {
+        next
+      }
+
+      value=substr($0, index($0, "=") + 1)
+      sub(/^[ \t]+/, "", value)
+      sub(/[ \t]+$/, "", value)
+
+      if (value ~ /^".*"$/ || value ~ /^'\''.*'\''$/) {
+        value=substr(value, 2, length(value) - 2)
+      }
+
+      print value
+      exit
+    }
+  ' ./data/.env
+}
+
+validate_runtime_env() {
+  local jwt_secret
+  local totp_encryption_key
+
+  jwt_secret="$(read_env_value "JWT_SECRET")"
+  if [[ -z "$jwt_secret" ]]; then
+    echo "JWT_SECRET is missing in ./data/.env" >&2
+    exit 1
+  fi
+  if ((${#jwt_secret} < 32)); then
+    echo "JWT_SECRET in ./data/.env must be at least 32 characters." >&2
+    exit 1
+  fi
+
+  totp_encryption_key="$(read_env_value "TOTP_ENCRYPTION_KEY")"
+  if [[ -z "$totp_encryption_key" ]]; then
+    echo "TOTP_ENCRYPTION_KEY is missing in ./data/.env" >&2
+    exit 1
+  fi
+  if [[ ! "$totp_encryption_key" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "TOTP_ENCRYPTION_KEY in ./data/.env must be 64 hex characters." >&2
+    exit 1
+  fi
+}
+
 extract_compose_sub2api_image() {
   awk '
     function indent_len(line,   prefix) {
@@ -144,6 +198,7 @@ if [[ ! -f "./data/.env" ]]; then
 fi
 
 ensure_runtime_permissions
+validate_runtime_env
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   compose_cmd=(docker compose)
