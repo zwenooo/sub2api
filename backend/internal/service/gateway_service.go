@@ -513,6 +513,7 @@ type UpstreamFailoverError struct {
 	ResponseHeaders        http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
 	ForceCacheBilling      bool        // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	MaxSwitchesOverride    int         // 作用域规则命中时可覆盖本次请求的最大转发次数
 }
 
 func (e *UpstreamFailoverError) Error() string {
@@ -554,6 +555,7 @@ type GatewayService struct {
 	httpUpstream          HTTPUpstream
 	deferredService       *DeferredService
 	concurrencyService    *ConcurrencyService
+	accountRuleService    *AccountRuleService
 	claudeTokenProvider   *ClaudeTokenProvider
 	sessionLimitCache     SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
 	rpmCache              RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
@@ -587,6 +589,7 @@ func NewGatewayService(
 	identityService *IdentityService,
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
+	accountRuleService *AccountRuleService,
 	claudeTokenProvider *ClaudeTokenProvider,
 	sessionLimitCache SessionLimitCache,
 	rpmCache RPMCache,
@@ -615,6 +618,7 @@ func NewGatewayService(
 		identityService:      identityService,
 		httpUpstream:         httpUpstream,
 		deferredService:      deferredService,
+		accountRuleService:   accountRuleService,
 		claudeTokenProvider:  claudeTokenProvider,
 		sessionLimitCache:    sessionLimitCache,
 		rpmCache:             rpmCache,
@@ -3345,6 +3349,11 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
 		}
+		if s.accountRuleService != nil && !account.HasExplicitModelMapping() {
+			if allowed, scoped := s.accountRuleService.IsModelAllowedByScope(account, requestedModel); scoped && !allowed {
+				return false
+			}
+		}
 		// 使用与转发阶段一致的映射逻辑：自定义映射优先 → 默认映射兜底
 		mapped := mapAntigravityModel(account, requestedModel)
 		if mapped == "" {
@@ -3369,7 +3378,17 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
 		}
+		if s.accountRuleService != nil && !account.HasExplicitModelMapping() {
+			if allowed, scoped := s.accountRuleService.IsModelAllowedByScope(account, requestedModel); scoped && !allowed {
+				return false
+			}
+		}
 		return mapAntigravityModel(account, requestedModel) != ""
+	}
+	if s.accountRuleService != nil && !account.HasExplicitModelMapping() {
+		if allowed, scoped := s.accountRuleService.IsModelAllowedByScope(account, requestedModel); scoped {
+			return allowed
+		}
 	}
 	if account.Platform == PlatformSora {
 		return s.isSoraModelSupportedByAccount(account, requestedModel)
@@ -6204,19 +6223,32 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		upstreamDetail = truncateString(string(body), maxBytes)
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+
+	scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, body)
+	kind := "http_error"
+	if scopedRuleResult.Matched && scopedRuleResult.ShouldFailover {
+		kind = "failover"
+	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		UpstreamStatusCode: resp.StatusCode,
 		UpstreamRequestID:  resp.Header.Get("x-request-id"),
-		Kind:               "http_error",
+		Kind:               kind,
 		Message:            upstreamMsg,
 		Detail:             upstreamDetail,
 	})
+	if scopedRuleResult.Matched && scopedRuleResult.ShouldFailover {
+		return nil, &UpstreamFailoverError{
+			StatusCode:          resp.StatusCode,
+			ResponseBody:        body,
+			MaxSwitchesOverride: scopedRuleResult.MaxForwardAttempts,
+		}
+	}
 
 	// 处理上游错误，标记账号状态
 	shouldDisable := false
-	if s.rateLimitService != nil {
+	if !scopedRuleResult.Matched && s.rateLimitService != nil {
 		shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 	}
 	if shouldDisable {
@@ -6238,7 +6270,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	// 非 failover 错误也支持错误透传规则匹配。
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
 		c,
-		account.Platform,
+		account,
 		resp.StatusCode,
 		body,
 		http.StatusBadGateway,
@@ -6261,6 +6293,10 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			return nil, fmt.Errorf("upstream error: %d (passthrough rule matched)", resp.StatusCode)
 		}
 		return nil, fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", resp.StatusCode, summary)
+	}
+
+	if scopedRuleResult.Matched {
+		// 作用域规则已处理账号动作，但不要求 failover 时沿用默认错误映射返回给用户。
 	}
 
 	// 根据状态码返回适当的自定义错误响应（不透传上游详细信息）
@@ -6396,7 +6432,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
 		c,
-		account.Platform,
+		account,
 		resp.StatusCode,
 		respBody,
 		http.StatusBadGateway,
@@ -8316,35 +8352,38 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		accounts = filtered
 	}
 
-	// Collect unique models from all accounts
-	modelSet := make(map[string]struct{})
-	hasAnyMapping := false
-
-	for _, acc := range accounts {
-		mapping := acc.GetModelMapping()
-		if len(mapping) > 0 {
-			hasAnyMapping = true
-			for model := range mapping {
-				modelSet[model] = struct{}{}
+	models := []string(nil)
+	hasScopedModels := false
+	if s.accountRuleService != nil {
+		models, hasScopedModels = s.accountRuleService.CollectAvailableModels(accounts)
+	}
+	if !hasScopedModels {
+		// Collect unique models from explicit account mappings only.
+		modelSet := make(map[string]struct{})
+		hasAnyMapping := false
+		for _, acc := range accounts {
+			mapping := acc.GetModelMapping()
+			if len(mapping) > 0 {
+				hasAnyMapping = true
+				for model := range mapping {
+					modelSet[model] = struct{}{}
+				}
 			}
 		}
-	}
 
-	// If no account has model_mapping, return nil (use default)
-	if !hasAnyMapping {
-		if s.modelsListCache != nil {
-			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
-			modelsListCacheStoreTotal.Add(1)
+		if !hasAnyMapping {
+			if s.modelsListCache != nil {
+				s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
+				modelsListCacheStoreTotal.Add(1)
+			}
+			return nil
 		}
-		return nil
+		models = make([]string, 0, len(modelSet))
+		for model := range modelSet {
+			models = append(models, model)
+		}
+		sort.Strings(models)
 	}
-
-	// Convert to slice
-	models := make([]string, 0, len(modelSet))
-	for model := range modelSet {
-		models = append(models, model)
-	}
-	sort.Strings(models)
 
 	if s.modelsListCache != nil {
 		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)

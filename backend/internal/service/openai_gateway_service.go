@@ -315,6 +315,7 @@ type OpenAIGatewayService struct {
 	userGroupRateResolver *userGroupRateResolver
 	httpUpstream          HTTPUpstream
 	deferredService       *DeferredService
+	accountRuleService    *AccountRuleService
 	openAITokenProvider   *OpenAITokenProvider
 	toolCorrector         *CodexToolCorrector
 	openaiWSResolver      OpenAIWSProtocolResolver
@@ -352,6 +353,7 @@ func NewOpenAIGatewayService(
 	billingCacheService *BillingCacheService,
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
+	accountRuleService *AccountRuleService,
 	openAITokenProvider *OpenAITokenProvider,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
@@ -377,6 +379,7 @@ func NewOpenAIGatewayService(
 		),
 		httpUpstream:          httpUpstream,
 		deferredService:       deferredService,
+		accountRuleService:    accountRuleService,
 		openAITokenProvider:   openAITokenProvider,
 		toolCorrector:         NewCodexToolCorrector(),
 		openaiWSResolver:      NewOpenAIWSProtocolResolver(cfg),
@@ -1180,7 +1183,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if !account.IsSchedulable() || !account.IsOpenAI() {
 		return nil
 	}
-	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+	if requestedModel != "" && !s.isModelSupportedByAccount(account, requestedModel) {
 		return nil
 	}
 
@@ -1334,7 +1337,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				}
 				if !clearSticky && account.IsSchedulable() && account.IsOpenAI() &&
-					(requestedModel == "" || account.IsModelSupported(requestedModel)) {
+					(requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) {
 					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 					if err == nil && result.Acquired {
 						_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
@@ -1375,7 +1378,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		if !acc.IsSchedulable() {
 			continue
 		}
-		if requestedModel != "" && !acc.IsModelSupported(requestedModel) {
+		if requestedModel != "" && !s.isModelSupportedByAccount(acc, requestedModel) {
 			continue
 		}
 		candidates = append(candidates, acc)
@@ -1536,10 +1539,22 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	if !fresh.IsSchedulable() || !fresh.IsOpenAI() {
 		return nil
 	}
-	if requestedModel != "" && !fresh.IsModelSupported(requestedModel) {
+	if requestedModel != "" && !s.isModelSupportedByAccount(fresh, requestedModel) {
 		return nil
 	}
 	return fresh
+}
+
+func (s *OpenAIGatewayService) isModelSupportedByAccount(account *Account, requestedModel string) bool {
+	if account == nil {
+		return false
+	}
+	if s.accountRuleService != nil && !account.HasExplicitModelMapping() {
+		if allowed, scoped := s.accountRuleService.IsModelAllowedByScope(account, requestedModel); scoped {
+			return allowed
+		}
+	}
+	return account.IsModelSupported(requestedModel)
 }
 
 func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
@@ -2182,7 +2197,18 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				}
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Skip non-WSv2 invalid_encrypted_content retry because encrypted reasoning items are missing (account: %s)", account.Name)
 			}
-			if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+			scopedRuleMatched := false
+			scopedRuleWantsFailover := false
+			if s.accountRuleService != nil {
+				if match := s.accountRuleService.MatchRuntimeRule(account, resp.StatusCode, respBody); match != nil && match.Rule != nil {
+					scopedRuleMatched = true
+					scopedRuleWantsFailover = match.Rule.ActionFailover
+				}
+			}
+			if scopedRuleMatched && !scopedRuleWantsFailover {
+				return s.handleErrorResponse(ctx, resp, c, account, body)
+			}
+			if scopedRuleWantsFailover || s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
 				upstreamDetail := ""
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 					maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -2202,11 +2228,18 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					Detail:             upstreamDetail,
 				})
 
-				s.handleFailoverSideEffects(ctx, resp, account)
+				maxSwitchesOverride := 0
+				if scopedRuleWantsFailover {
+					result := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+					maxSwitchesOverride = result.MaxForwardAttempts
+				} else {
+					s.handleFailoverSideEffects(ctx, resp, account)
+				}
 				return nil, &UpstreamFailoverError{
 					StatusCode:             resp.StatusCode,
 					ResponseBody:           respBody,
 					RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+					MaxSwitchesOverride:    maxSwitchesOverride,
 				}
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body)
@@ -2959,9 +2992,35 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		)
 	}
 
+	scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, body)
+	if scopedRuleResult.Matched {
+		kind := "http_error"
+		if scopedRuleResult.ShouldFailover {
+			kind = "failover"
+		}
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Kind:               kind,
+			Message:            upstreamMsg,
+			Detail:             upstreamDetail,
+		})
+		if scopedRuleResult.ShouldFailover {
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           body,
+				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+				MaxSwitchesOverride:    scopedRuleResult.MaxForwardAttempts,
+			}
+		}
+	}
+
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
 		c,
-		PlatformOpenAI,
+		account,
 		resp.StatusCode,
 		body,
 		http.StatusBadGateway,
@@ -2981,6 +3040,10 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			return nil, fmt.Errorf("upstream error: %d (passthrough rule matched)", resp.StatusCode)
 		}
 		return nil, fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", resp.StatusCode, upstreamMsg)
+	}
+
+	if scopedRuleResult.Matched {
+		return writeOpenAIUpstreamMappedError(c, resp.StatusCode, upstreamMsg)
 	}
 
 	// Check custom error codes
@@ -3074,6 +3137,50 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 }
 
+func writeOpenAIUpstreamMappedError(c *gin.Context, upstreamStatus int, upstreamMsg string) (*OpenAIForwardResult, error) {
+	statusCode, errType, errMsg := mapOpenAIUpstreamError(upstreamStatus)
+	c.JSON(statusCode, gin.H{
+		"error": gin.H{
+			"type":    errType,
+			"message": errMsg,
+		},
+	})
+	if upstreamMsg == "" {
+		return nil, fmt.Errorf("upstream error: %d", upstreamStatus)
+	}
+	return nil, fmt.Errorf("upstream error: %d message=%s", upstreamStatus, upstreamMsg)
+}
+
+func mapOpenAIUpstreamError(upstreamStatus int) (statusCode int, errType string, errMsg string) {
+	switch upstreamStatus {
+	case 401:
+		return http.StatusBadGateway, "upstream_error", "Upstream authentication failed, please contact administrator"
+	case 402:
+		return http.StatusBadGateway, "upstream_error", "Upstream payment required: insufficient balance or billing issue"
+	case 403:
+		return http.StatusBadGateway, "upstream_error", "Upstream access forbidden, please contact administrator"
+	case 429:
+		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
+	default:
+		return http.StatusBadGateway, "upstream_error", "Upstream request failed"
+	}
+}
+
+func mapOpenAICompatUpstreamError(upstreamStatus int) (errType string, statusCode int, errMsg string) {
+	switch upstreamStatus {
+	case 401:
+		return "authentication_error", http.StatusBadGateway, "Upstream authentication failed, please contact administrator"
+	case 402:
+		return "billing_error", http.StatusBadGateway, "Upstream payment required, please contact administrator"
+	case 403:
+		return "permission_error", http.StatusBadGateway, "Upstream access forbidden, please contact administrator"
+	case 429:
+		return "rate_limit_error", http.StatusTooManyRequests, "Upstream rate limit exceeded, please retry later"
+	default:
+		return "api_error", http.StatusBadGateway, "Upstream request failed"
+	}
+}
+
 // compatErrorWriter is the signature for format-specific error writers used by
 // the compat paths (Chat Completions and Anthropic Messages).
 type compatErrorWriter func(c *gin.Context, statusCode int, errType, message string)
@@ -3107,9 +3214,36 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 
-	// Apply error passthrough rules
+	scopedRuleResult := applyBoundAccountRule(c.Request.Context(), c, account, resp.StatusCode, resp.Header, body)
+	if scopedRuleResult.Matched {
+		kind := "http_error"
+		if scopedRuleResult.ShouldFailover {
+			kind = "failover"
+		}
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Kind:               kind,
+			Message:            upstreamMsg,
+			Detail:             upstreamDetail,
+		})
+		if scopedRuleResult.ShouldFailover {
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           body,
+				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+				MaxSwitchesOverride:    scopedRuleResult.MaxForwardAttempts,
+			}
+		}
+	}
+
+	// Apply error passthrough rules after scoped failover handling so a rule that
+	// enables both failover and override still performs the retry path first.
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
-		c, account.Platform, resp.StatusCode, body,
+		c, account, resp.StatusCode, body,
 		http.StatusBadGateway, "api_error", "Upstream request failed",
 	); matched {
 		writeError(c, status, errType, errMsg)
@@ -3120,6 +3254,14 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 			return nil, fmt.Errorf("upstream error: %d (passthrough rule matched)", resp.StatusCode)
 		}
 		return nil, fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", resp.StatusCode, upstreamMsg)
+	}
+	if scopedRuleResult.Matched {
+		errType, statusCode, errMsg := mapOpenAICompatUpstreamError(resp.StatusCode)
+		writeError(c, statusCode, errType, errMsg)
+		if upstreamMsg == "" {
+			return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
 
 	// Check custom error codes — if the account does not handle this status,

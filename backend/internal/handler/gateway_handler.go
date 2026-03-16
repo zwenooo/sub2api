@@ -44,6 +44,7 @@ type GatewayHandler struct {
 	usageService              *service.UsageService
 	apiKeyService             *service.APIKeyService
 	usageRecordWorkerPool     *service.UsageRecordWorkerPool
+	accountRuleService        *service.AccountRuleService
 	errorPassthroughService   *service.ErrorPassthroughService
 	concurrencyHelper         *ConcurrencyHelper
 	userMsgQueueHelper        *UserMsgQueueHelper
@@ -64,6 +65,7 @@ func NewGatewayHandler(
 	usageService *service.UsageService,
 	apiKeyService *service.APIKeyService,
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
+	accountRuleService *service.AccountRuleService,
 	errorPassthroughService *service.ErrorPassthroughService,
 	userMsgQueueService *service.UserMessageQueueService,
 	cfg *config.Config,
@@ -97,6 +99,7 @@ func NewGatewayHandler(
 		usageService:              usageService,
 		apiKeyService:             apiKeyService,
 		usageRecordWorkerPool:     usageRecordWorkerPool,
+		accountRuleService:        accountRuleService,
 		errorPassthroughService:   errorPassthroughService,
 		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatClaude, pingInterval),
 		userMsgQueueHelper:        umqHelper,
@@ -191,6 +194,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
+	}
+	if h.accountRuleService != nil {
+		service.BindAccountRuleService(c, h.accountRuleService)
 	}
 
 	// 获取订阅信息（可能为nil）- 提前获取用于后续检查
@@ -315,7 +321,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 			account := selection.Account
-			setOpsSelectedAccount(c, account.ID, account.Platform)
+			setOpsSelectedAccount(c, account.ID, account.Platform, account.Type)
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
@@ -520,7 +526,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 			account := selection.Account
-			setOpsSelectedAccount(c, account.ID, account.Platform)
+			setOpsSelectedAccount(c, account.ID, account.Platform, account.Type)
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
@@ -1187,6 +1193,18 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 
+	if status, errType, errMsg, matched := resolveAccountRuleFailoverResponse(
+		c,
+		h.accountRuleService,
+		platform,
+		statusCode,
+		responseBody,
+		"Upstream request failed",
+	); matched {
+		h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+		return
+	}
+
 	// 先检查透传规则
 	if h.errorPassthroughService != nil && len(responseBody) > 0 {
 		if rule := h.errorPassthroughService.MatchRule(platform, statusCode, responseBody); rule != nil {
@@ -1401,7 +1419,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
 		return
 	}
-	setOpsSelectedAccount(c, account.ID, account.Platform)
+	setOpsSelectedAccount(c, account.ID, account.Platform, account.Type)
 
 	// 转发请求（不记录使用量）
 	if err := h.gatewayService.ForwardCountTokens(c.Request.Context(), c, account, parsedReq); err != nil {

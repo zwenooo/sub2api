@@ -407,6 +407,14 @@ func (a *Account) GetModelMapping() map[string]string {
 	return mapping
 }
 
+func (a *Account) HasExplicitModelMapping() bool {
+	if a == nil || a.Credentials == nil {
+		return false
+	}
+	rawMapping, ok := a.Credentials["model_mapping"].(map[string]any)
+	return ok && len(rawMapping) > 0
+}
+
 func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]string {
 	if a.Credentials == nil {
 		// Antigravity 平台使用默认映射

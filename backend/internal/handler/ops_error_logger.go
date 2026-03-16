@@ -361,17 +361,20 @@ func attachOpsRequestBodyToEntry(c *gin.Context, entry *service.OpsInsertErrorLo
 	opsErrorLogSanitized.Add(1)
 }
 
-func setOpsSelectedAccount(c *gin.Context, accountID int64, platform ...string) {
+func setOpsSelectedAccount(c *gin.Context, accountID int64, platform string, accountType ...string) {
 	if c == nil || accountID <= 0 {
 		return
 	}
 	c.Set(opsAccountIDKey, accountID)
 	if c.Request != nil {
 		ctx := context.WithValue(c.Request.Context(), ctxkey.AccountID, accountID)
-		if len(platform) > 0 {
-			p := strings.TrimSpace(platform[0])
-			if p != "" {
-				ctx = context.WithValue(ctx, ctxkey.Platform, p)
+		if p := strings.TrimSpace(platform); p != "" {
+			ctx = context.WithValue(ctx, ctxkey.Platform, p)
+		}
+		if len(accountType) > 0 {
+			t := strings.TrimSpace(accountType[0])
+			if t != "" {
+				ctx = context.WithValue(ctx, ctxkey.AccountType, t)
 			}
 		}
 		c.Request = c.Request.WithContext(ctx)

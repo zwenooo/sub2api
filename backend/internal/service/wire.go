@@ -417,6 +417,7 @@ var ProviderSet = wire.NewSet(
 	NewUserAttributeService,
 	NewUsageCache,
 	NewTotpService,
+	NewAccountRuleService,
 	NewErrorPassthroughService,
 	NewDigestSessionStore,
 	ProvideIdempotencyCoordinator,

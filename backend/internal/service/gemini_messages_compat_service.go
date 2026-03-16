@@ -52,6 +52,7 @@ type GeminiMessagesCompatService struct {
 	rateLimitService          *RateLimitService
 	httpUpstream              HTTPUpstream
 	antigravityGatewayService *AntigravityGatewayService
+	accountRuleService        *AccountRuleService
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
 }
@@ -65,6 +66,7 @@ func NewGeminiMessagesCompatService(
 	rateLimitService *RateLimitService,
 	httpUpstream HTTPUpstream,
 	antigravityGatewayService *AntigravityGatewayService,
+	accountRuleService *AccountRuleService,
 	cfg *config.Config,
 ) *GeminiMessagesCompatService {
 	return &GeminiMessagesCompatService{
@@ -76,6 +78,7 @@ func NewGeminiMessagesCompatService(
 		rateLimitService:          rateLimitService,
 		httpUpstream:              httpUpstream,
 		antigravityGatewayService: antigravityGatewayService,
+		accountRuleService:        accountRuleService,
 		cfg:                       cfg,
 		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
 	}
@@ -399,7 +402,17 @@ func (s *GeminiMessagesCompatService) isModelSupportedByAccount(account *Account
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
 		}
+		if s.accountRuleService != nil && !account.HasExplicitModelMapping() {
+			if allowed, scoped := s.accountRuleService.IsModelAllowedByScope(account, requestedModel); scoped && !allowed {
+				return false
+			}
+		}
 		return mapAntigravityModel(account, requestedModel) != ""
+	}
+	if s.accountRuleService != nil && !account.HasExplicitModelMapping() {
+		if allowed, scoped := s.accountRuleService.IsModelAllowedByScope(account, requestedModel); scoped {
+			return allowed
+		}
 	}
 	return account.IsModelSupported(requestedModel)
 }
@@ -876,6 +889,45 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+		if scopedRuleResult.Matched {
+			upstreamReqID := resp.Header.Get(requestIDHeader)
+			if upstreamReqID == "" {
+				upstreamReqID = resp.Header.Get("x-goog-request-id")
+			}
+			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+			upstreamDetail := ""
+			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+				if maxBytes <= 0 {
+					maxBytes = 2048
+				}
+				upstreamDetail = truncateString(string(respBody), maxBytes)
+			}
+			kind := "http_error"
+			if scopedRuleResult.ShouldFailover {
+				kind = "failover"
+			}
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  upstreamReqID,
+				Kind:               kind,
+				Message:            upstreamMsg,
+				Detail:             upstreamDetail,
+			})
+			if scopedRuleResult.ShouldFailover {
+				return nil, &UpstreamFailoverError{
+					StatusCode:          resp.StatusCode,
+					ResponseBody:        respBody,
+					MaxSwitchesOverride: scopedRuleResult.MaxForwardAttempts,
+				}
+			}
+			return nil, s.writeGeminiMappedError(c, account, resp.StatusCode, upstreamReqID, respBody)
+		}
 		// 统一错误策略：自定义错误码 + 临时不可调度
 		if s.rateLimitService != nil {
 			switch s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody) {
@@ -1359,6 +1411,71 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			}, nil
 		}
 
+		scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+		if scopedRuleResult.Matched {
+			evBody := unwrapIfNeeded(isOAuth, respBody)
+			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(evBody))
+			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+			upstreamDetail := ""
+			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+				if maxBytes <= 0 {
+					maxBytes = 2048
+				}
+				upstreamDetail = truncateString(string(evBody), maxBytes)
+			}
+			kind := "http_error"
+			if scopedRuleResult.ShouldFailover {
+				kind = "failover"
+			}
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  requestID,
+				Kind:               kind,
+				Message:            upstreamMsg,
+				Detail:             upstreamDetail,
+			})
+			if scopedRuleResult.ShouldFailover {
+				return nil, &UpstreamFailoverError{
+					StatusCode:          resp.StatusCode,
+					ResponseBody:        evBody,
+					MaxSwitchesOverride: scopedRuleResult.MaxForwardAttempts,
+				}
+			}
+			if status, errType, errMsg, matched := applyErrorPassthroughRule(
+				c,
+				account,
+				resp.StatusCode,
+				evBody,
+				http.StatusBadGateway,
+				"upstream_error",
+				"Upstream request failed",
+			); matched {
+				c.JSON(status, gin.H{
+					"type":  "error",
+					"error": gin.H{"type": errType, "message": errMsg},
+				})
+				if upstreamMsg == "" {
+					upstreamMsg = errMsg
+				}
+				if upstreamMsg == "" {
+					return nil, fmt.Errorf("gemini upstream error: %d (passthrough rule matched)", resp.StatusCode)
+				}
+				return nil, fmt.Errorf("gemini upstream error: %d (passthrough rule matched) message=%s", resp.StatusCode, upstreamMsg)
+			}
+			c.JSON(http.StatusBadGateway, gin.H{
+				"type":  "error",
+				"error": gin.H{"type": "upstream_error", "message": "Upstream request failed"},
+			})
+			if upstreamMsg == "" {
+				return nil, fmt.Errorf("gemini upstream error: %d", resp.StatusCode)
+			}
+			return nil, fmt.Errorf("gemini upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+		}
+
 		// 统一错误策略：自定义错误码 + 临时不可调度
 		if s.rateLimitService != nil {
 			switch s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody) {
@@ -1642,9 +1759,18 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 		logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini] upstream error %d: %s", upstreamStatus, truncateForLog(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes))
 	}
 
+	scopedRuleResult := applyBoundAccountRule(c.Request.Context(), c, account, upstreamStatus, nil, body)
+	if scopedRuleResult.Matched && scopedRuleResult.ShouldFailover {
+		return &UpstreamFailoverError{
+			StatusCode:          upstreamStatus,
+			ResponseBody:        body,
+			MaxSwitchesOverride: scopedRuleResult.MaxForwardAttempts,
+		}
+	}
+
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
 		c,
-		PlatformGemini,
+		account,
 		upstreamStatus,
 		body,
 		http.StatusBadGateway,
@@ -1662,6 +1788,16 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 			return fmt.Errorf("upstream error: %d (passthrough rule matched)", upstreamStatus)
 		}
 		return fmt.Errorf("upstream error: %d (passthrough rule matched) message=%s", upstreamStatus, upstreamMsg)
+	}
+	if scopedRuleResult.Matched {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"type":  "error",
+			"error": gin.H{"type": "upstream_error", "message": "Upstream request failed"},
+		})
+		if upstreamMsg == "" {
+			return fmt.Errorf("upstream error: %d", upstreamStatus)
+		}
+		return fmt.Errorf("upstream error: %d message=%s", upstreamStatus, upstreamMsg)
 	}
 
 	var statusCode int

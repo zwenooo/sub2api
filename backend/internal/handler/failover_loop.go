@@ -70,6 +70,10 @@ func (s *FailoverState) HandleFailoverError(
 	failoverErr *service.UpstreamFailoverError,
 ) FailoverAction {
 	s.LastFailoverErr = failoverErr
+	maxSwitches := s.MaxSwitches
+	if failoverErr != nil && failoverErr.MaxSwitchesOverride > 0 {
+		maxSwitches = failoverErr.MaxSwitchesOverride
+	}
 
 	// 缓存计费判断
 	if needForceCacheBilling(s.hasBoundSession, failoverErr) {
@@ -100,7 +104,7 @@ func (s *FailoverState) HandleFailoverError(
 	s.FailedAccountIDs[accountID] = struct{}{}
 
 	// 检查是否耗尽
-	if s.SwitchCount >= s.MaxSwitches {
+	if s.SwitchCount >= maxSwitches {
 		return FailoverExhausted
 	}
 
@@ -110,7 +114,7 @@ func (s *FailoverState) HandleFailoverError(
 		zap.Int64("account_id", accountID),
 		zap.Int("upstream_status", failoverErr.StatusCode),
 		zap.Int("switch_count", s.SwitchCount),
-		zap.Int("max_switches", s.MaxSwitches),
+		zap.Int("max_switches", maxSwitches),
 	)
 
 	// Antigravity 平台换号线性递增延时
@@ -134,24 +138,31 @@ func (s *FailoverState) HandleFailoverError(
 func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAction {
 	if s.LastFailoverErr != nil &&
 		s.LastFailoverErr.StatusCode == http.StatusServiceUnavailable &&
-		s.SwitchCount <= s.MaxSwitches {
+		s.SwitchCount <= resolveFailoverMaxSwitches(s.MaxSwitches, s.LastFailoverErr) {
 
 		logger.FromContext(ctx).Warn("gateway.failover_single_account_backoff",
 			zap.Duration("backoff_delay", singleAccountBackoffDelay),
 			zap.Int("switch_count", s.SwitchCount),
-			zap.Int("max_switches", s.MaxSwitches),
+			zap.Int("max_switches", resolveFailoverMaxSwitches(s.MaxSwitches, s.LastFailoverErr)),
 		)
 		if !sleepWithContext(ctx, singleAccountBackoffDelay) {
 			return FailoverCanceled
 		}
 		logger.FromContext(ctx).Warn("gateway.failover_single_account_retry",
 			zap.Int("switch_count", s.SwitchCount),
-			zap.Int("max_switches", s.MaxSwitches),
+			zap.Int("max_switches", resolveFailoverMaxSwitches(s.MaxSwitches, s.LastFailoverErr)),
 		)
 		s.FailedAccountIDs = make(map[int64]struct{})
 		return FailoverContinue
 	}
 	return FailoverExhausted
+}
+
+func resolveFailoverMaxSwitches(defaultMax int, failoverErr *service.UpstreamFailoverError) int {
+	if failoverErr != nil && failoverErr.MaxSwitchesOverride > 0 {
+		return failoverErr.MaxSwitchesOverride
+	}
+	return defaultMax
 }
 
 // needForceCacheBilling 判断 failover 时是否需要强制缓存计费。

@@ -30,7 +30,7 @@ func getBoundErrorPassthroughService(c *gin.Context) *ErrorPassthroughService {
 // applyErrorPassthroughRule 按规则改写错误响应；未命中时返回默认响应参数。
 func applyErrorPassthroughRule(
 	c *gin.Context,
-	platform string,
+	account *Account,
 	upstreamStatus int,
 	responseBody []byte,
 	defaultStatus int,
@@ -41,11 +41,35 @@ func applyErrorPassthroughRule(
 	errType = defaultErrType
 	errMsg = defaultErrMsg
 
+	if scopedSvc := getBoundAccountRuleService(c); scopedSvc != nil && account != nil {
+		match := scopedSvc.MatchRuntimeRule(account, upstreamStatus, responseBody)
+		if match != nil && match.Rule != nil && match.Rule.ActionOverride {
+			status = upstreamStatus
+			if !match.Rule.PassthroughCode && match.Rule.ResponseCode != nil {
+				status = *match.Rule.ResponseCode
+			}
+
+			errMsg = ExtractUpstreamErrorMessage(responseBody)
+			if !match.Rule.PassthroughBody && match.Rule.CustomMessage != nil {
+				errMsg = *match.Rule.CustomMessage
+			}
+			if match.Rule.SkipMonitoring {
+				c.Set(OpsSkipPassthroughKey, true)
+			}
+			errType = "upstream_error"
+			return status, errType, errMsg, true
+		}
+	}
+
 	svc := getBoundErrorPassthroughService(c)
 	if svc == nil {
 		return status, errType, errMsg, false
 	}
 
+	platform := ""
+	if account != nil {
+		platform = account.Platform
+	}
 	rule := svc.MatchRule(platform, upstreamStatus, responseBody)
 	if rule == nil {
 		return status, errType, errMsg, false

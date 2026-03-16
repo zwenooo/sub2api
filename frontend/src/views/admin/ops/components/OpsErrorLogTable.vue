@@ -153,6 +153,13 @@
               <!-- Actions -->
               <td class="whitespace-nowrap px-4 py-2 text-right" @click.stop>
                 <div class="flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    class="text-xs font-bold text-amber-600 hover:text-amber-700 dark:text-amber-300"
+                    @click="handleAddRule(log)"
+                  >
+                    加入
+                  </button>
                   <button type="button" class="text-primary-600 hover:text-primary-700 dark:text-primary-400 text-xs font-bold" @click="emit('openErrorDetail', log.id)">
                     {{ t('admin.ops.errorLog.details') }}
                   </button>
@@ -181,11 +188,13 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import Pagination from '@/components/common/Pagination.vue'
 import type { OpsErrorLog } from '@/api/admin/ops'
 import { getSeverityClass, formatDateTime } from '../utils/opsFormatters'
 
 const { t } = useI18n()
+const router = useRouter()
 
 function isUpstreamRow(log: OpsErrorLog): boolean {
   const phase = String(log.phase || '').toLowerCase()
@@ -233,6 +242,17 @@ interface Emits {
 
 defineProps<Props>()
 const emit = defineEmits<Emits>()
+
+function handleAddRule(log: OpsErrorLog) {
+  const source = isUpstreamRow(log) ? 'upstream-error' : 'request-error'
+  router.push({
+    name: 'AdminAccounts',
+    query: {
+      rule_draft_source: source,
+      rule_draft_id: String(log.id)
+    }
+  })
+}
 
 function getStatusClass(code: number): string {
   if (code >= 500) return 'bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-900/30 dark:text-red-400 dark:ring-red-500/30'

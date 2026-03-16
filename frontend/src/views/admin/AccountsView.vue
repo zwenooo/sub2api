@@ -65,12 +65,12 @@
 
               <!-- Error Passthrough Rules -->
               <button
-                @click="showErrorPassthrough = true"
+                @click="showAccountRules = true"
                 class="btn btn-secondary"
-                :title="t('admin.errorPassthrough.title')"
+                title="账号规则管理"
               >
                 <Icon name="shield" size="md" class="mr-1.5" />
-                <span class="hidden md:inline">{{ t('admin.errorPassthrough.title') }}</span>
+                <span class="hidden md:inline">规则管理</span>
               </button>
 
               <!-- Column Settings Dropdown -->
@@ -287,7 +287,13 @@
         <span>{{ t('admin.accounts.dataExportIncludeProxies') }}</span>
       </label>
     </ConfirmDialog>
-    <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
+    <AccountRuleManagerModal
+      :show="showAccountRules"
+      :draft-source="accountRuleDraftSource"
+      :draft-id="accountRuleDraftID"
+      @close="closeAccountRuleManager"
+      @updated="reload"
+    />
   </AppLayout>
 </template>
 
@@ -295,6 +301,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
@@ -325,7 +332,7 @@ import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
-import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
+import AccountRuleManagerModal from '@/components/admin/account/AccountRuleManagerModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import type { Account, AccountPlatform, AccountType, Proxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
@@ -333,6 +340,8 @@ import type { Account, AccountPlatform, AccountType, Proxy, AdminGroup, WindowSt
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const route = useRoute()
+const router = useRouter()
 
 const proxies = ref<Proxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -366,7 +375,7 @@ const showDeleteDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
 const showStats = ref(false)
-const showErrorPassthrough = ref(false)
+const showAccountRules = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
@@ -408,6 +417,19 @@ const todayStatsLoading = ref(false)
 const todayStatsError = ref<string | null>(null)
 const todayStatsReqSeq = ref(0)
 const pendingTodayStatsRefresh = ref(false)
+
+const accountRuleDraftSource = computed<'request-error' | 'upstream-error' | null>(() => {
+  const raw = route.query.rule_draft_source
+  const value = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : ''
+  return value === 'request-error' || value === 'upstream-error' ? value : null
+})
+
+const accountRuleDraftID = computed<number | null>(() => {
+  const raw = route.query.rule_draft_id
+  const value = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : ''
+  const parsed = Number.parseInt(value || '', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+})
 
 const buildDefaultTodayStats = (): WindowStats => ({
   requests: 0,
@@ -672,9 +694,31 @@ const isAnyModalOpen = computed(() => {
     showTest.value ||
     showStats.value ||
     showSchedulePanel.value ||
-    showErrorPassthrough.value
+    showAccountRules.value
   )
 })
+
+const closeAccountRuleManager = async () => {
+  showAccountRules.value = false
+  if (!accountRuleDraftSource.value && !accountRuleDraftID.value) {
+    return
+  }
+
+  const nextQuery = { ...route.query }
+  delete nextQuery.rule_draft_source
+  delete nextQuery.rule_draft_id
+  await router.replace({ query: nextQuery })
+}
+
+watch(
+  [accountRuleDraftSource, accountRuleDraftID],
+  ([source, id]) => {
+    if (source && id) {
+      showAccountRules.value = true
+    }
+  },
+  { immediate: true }
+)
 
 const enterAutoRefreshSilentWindow = () => {
   autoRefreshSilentUntil.value = Date.now() + AUTO_REFRESH_SILENT_WINDOW_MS

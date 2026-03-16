@@ -806,13 +806,14 @@ func logPrefix(sessionID, accountName string) string {
 
 // AntigravityGatewayService 处理 Antigravity 平台的 API 转发
 type AntigravityGatewayService struct {
-	accountRepo       AccountRepository
-	tokenProvider     *AntigravityTokenProvider
-	rateLimitService  *RateLimitService
-	httpUpstream      HTTPUpstream
-	settingService    *SettingService
-	cache             GatewayCache // 用于模型级限流时清除粘性会话绑定
-	schedulerSnapshot *SchedulerSnapshotService
+	accountRepo        AccountRepository
+	tokenProvider      *AntigravityTokenProvider
+	rateLimitService   *RateLimitService
+	httpUpstream       HTTPUpstream
+	settingService     *SettingService
+	cache              GatewayCache // 用于模型级限流时清除粘性会话绑定
+	schedulerSnapshot  *SchedulerSnapshotService
+	accountRuleService *AccountRuleService
 }
 
 func NewAntigravityGatewayService(
@@ -823,15 +824,17 @@ func NewAntigravityGatewayService(
 	rateLimitService *RateLimitService,
 	httpUpstream HTTPUpstream,
 	settingService *SettingService,
+	accountRuleService *AccountRuleService,
 ) *AntigravityGatewayService {
 	return &AntigravityGatewayService{
-		accountRepo:       accountRepo,
-		tokenProvider:     tokenProvider,
-		rateLimitService:  rateLimitService,
-		httpUpstream:      httpUpstream,
-		settingService:    settingService,
-		cache:             cache,
-		schedulerSnapshot: schedulerSnapshot,
+		accountRepo:        accountRepo,
+		tokenProvider:      tokenProvider,
+		rateLimitService:   rateLimitService,
+		httpUpstream:       httpUpstream,
+		settingService:     settingService,
+		cache:              cache,
+		schedulerSnapshot:  schedulerSnapshot,
+		accountRuleService: accountRuleService,
 	}
 }
 
@@ -3515,7 +3518,7 @@ func (s *AntigravityGatewayService) writeMappedClaudeError(c *gin.Context, accou
 
 	// 检查错误透传规则
 	if ptStatus, ptErrType, ptErrMsg, matched := applyErrorPassthroughRule(
-		c, account.Platform, upstreamStatus, body,
+		c, account, upstreamStatus, body,
 		0, "", "",
 	); matched {
 		c.JSON(ptStatus, gin.H{

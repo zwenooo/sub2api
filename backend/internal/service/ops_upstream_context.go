@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 )
 
@@ -155,11 +156,6 @@ func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEve
 		return
 	}
 
-	svc := getBoundErrorPassthroughService(c)
-	if svc == nil {
-		return
-	}
-
 	// Use the best available body representation for keyword matching.
 	// Even when body is empty, MatchRule can still match rules that only
 	// specify ErrorCodes (no Keywords), so we always call it.
@@ -168,6 +164,27 @@ func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEve
 		body = ev.Message
 	}
 
+	if scopedSvc := getBoundAccountRuleService(c); scopedSvc != nil {
+		accountType := ""
+		if c.Request != nil {
+			if v, ok := c.Request.Context().Value(ctxkey.AccountType).(string); ok {
+				accountType = strings.TrimSpace(v)
+			}
+		}
+		match := scopedSvc.MatchRuntimeRule(&Account{
+			Platform: ev.Platform,
+			Type:     accountType,
+		}, ev.UpstreamStatusCode, []byte(body))
+		if match != nil && match.Rule != nil && match.Rule.SkipMonitoring {
+			c.Set(OpsSkipPassthroughKey, true)
+			return
+		}
+	}
+
+	svc := getBoundErrorPassthroughService(c)
+	if svc == nil {
+		return
+	}
 	rule := svc.MatchRule(ev.Platform, ev.UpstreamStatusCode, []byte(body))
 	if rule != nil && rule.SkipMonitoring {
 		c.Set(OpsSkipPassthroughKey, true)
