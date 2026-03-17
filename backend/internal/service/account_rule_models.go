@@ -42,7 +42,7 @@ type AccountRuleErrorCollection struct {
 	Description string                  `json:"description"`
 	CreatedAt   time.Time               `json:"created_at"`
 	UpdatedAt   time.Time               `json:"updated_at"`
-	Rules       []*AccountRuleErrorRule `json:"rules,omitempty"`
+	Rules       []*AccountRuleErrorRule `json:"rules"`
 }
 
 type AccountRuleErrorRule struct {
