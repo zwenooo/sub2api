@@ -15,12 +15,30 @@ const (
 	defaultAccountRuleForwardMaxAttempts = 3
 )
 
-type AccountRuleScope struct {
+type AccountRuleBinding struct {
+	ID                int64     `json:"id"`
+	Platform          string    `json:"platform"`
+	BusinessType      string    `json:"business_type"`
+	Enabled           bool      `json:"enabled"`
+	ModelCollectionID *int64    `json:"model_collection_id,omitempty"`
+	ErrorCollectionID *int64    `json:"error_collection_id,omitempty"`
+	Description       string    `json:"description"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type AccountRuleModelCollection struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Models      []string  `json:"models"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type AccountRuleErrorCollection struct {
 	ID          int64                   `json:"id"`
-	Platform    string                  `json:"platform"`
-	AccountType string                  `json:"account_type"`
-	Enabled     bool                    `json:"enabled"`
-	ModelSet    []string                `json:"model_set"`
+	Name        string                  `json:"name"`
 	Description string                  `json:"description"`
 	CreatedAt   time.Time               `json:"created_at"`
 	UpdatedAt   time.Time               `json:"updated_at"`
@@ -28,32 +46,32 @@ type AccountRuleScope struct {
 }
 
 type AccountRuleErrorRule struct {
-	ID              int64     `json:"id"`
-	ScopeID         int64     `json:"scope_id"`
-	Name            string    `json:"name"`
-	Enabled         bool      `json:"enabled"`
-	Priority        int       `json:"priority"`
-	StatusCodes     []int     `json:"status_codes"`
-	Keywords        []string  `json:"keywords"`
-	MatchMode       string    `json:"match_mode"`
-	ActionDisable   bool      `json:"action_disable"`
-	ActionFailover  bool      `json:"action_failover"`
-	ActionDelete    bool      `json:"action_delete"`
-	ActionOverride  bool      `json:"action_override"`
-	PassthroughCode bool      `json:"passthrough_code"`
-	ResponseCode    *int      `json:"response_code"`
-	PassthroughBody bool      `json:"passthrough_body"`
-	CustomMessage   *string   `json:"custom_message"`
-	SkipMonitoring  bool      `json:"skip_monitoring"`
-	Description     string    `json:"description"`
-	SampleResponse  string    `json:"sample_response"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                int64     `json:"id"`
+	ErrorCollectionID int64     `json:"error_collection_id"`
+	Name              string    `json:"name"`
+	Enabled           bool      `json:"enabled"`
+	Priority          int       `json:"priority"`
+	StatusCodes       []int     `json:"status_codes"`
+	Keywords          []string  `json:"keywords"`
+	MatchMode         string    `json:"match_mode"`
+	ActionDisable     bool      `json:"action_disable"`
+	ActionFailover    bool      `json:"action_failover"`
+	ActionDelete      bool      `json:"action_delete"`
+	ActionOverride    bool      `json:"action_override"`
+	PassthroughCode   bool      `json:"passthrough_code"`
+	ResponseCode      *int      `json:"response_code"`
+	PassthroughBody   bool      `json:"passthrough_body"`
+	CustomMessage     *string   `json:"custom_message"`
+	SkipMonitoring    bool      `json:"skip_monitoring"`
+	Description       string    `json:"description"`
+	SampleResponse    string    `json:"sample_response"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-type AccountRuleObservedScope struct {
+type AccountRuleObservedBinding struct {
 	Platform     string `json:"platform"`
-	AccountType  string `json:"account_type"`
+	BusinessType string `json:"business_type"`
 	AccountCount int64  `json:"account_count"`
 }
 
@@ -62,23 +80,26 @@ type AccountRuleSettings struct {
 }
 
 type AccountRuleCatalog struct {
-	Scopes         []*AccountRuleScope         `json:"scopes"`
-	ObservedScopes []*AccountRuleObservedScope `json:"observed_scopes"`
-	Settings       AccountRuleSettings         `json:"settings"`
+	Bindings         []*AccountRuleBinding         `json:"bindings"`
+	ModelCollections []*AccountRuleModelCollection `json:"model_collections"`
+	ErrorCollections []*AccountRuleErrorCollection `json:"error_collections"`
+	ObservedBindings []*AccountRuleObservedBinding `json:"observed_bindings"`
+	Settings         AccountRuleSettings           `json:"settings"`
 }
 
 type AccountRuleDraft struct {
-	Platform       string                `json:"platform"`
-	AccountType    string                `json:"account_type"`
-	MatchedScopeID *int64                `json:"matched_scope_id,omitempty"`
-	AccountID      *int64                `json:"account_id,omitempty"`
-	AccountName    string                `json:"account_name,omitempty"`
-	Rule           *AccountRuleErrorRule `json:"rule"`
+	Platform                 string                `json:"platform"`
+	BusinessType             string                `json:"business_type"`
+	MatchedBindingID         *int64                `json:"matched_binding_id,omitempty"`
+	MatchedErrorCollectionID *int64                `json:"matched_error_collection_id,omitempty"`
+	AccountID                *int64                `json:"account_id,omitempty"`
+	AccountName              string                `json:"account_name,omitempty"`
+	Rule                     *AccountRuleErrorRule `json:"rule"`
 }
 
 type AccountRuleMatch struct {
-	Scope *AccountRuleScope
-	Rule  *AccountRuleErrorRule
+	Binding *AccountRuleBinding
+	Rule    *AccountRuleErrorRule
 }
 
 type AccountRuleActionResult struct {
@@ -137,23 +158,61 @@ func normalizeAccountRuleStatusCodes(values []int) []int {
 	return out
 }
 
-func (s *AccountRuleScope) Normalize() {
-	if s == nil {
+func (b *AccountRuleBinding) Normalize() {
+	if b == nil {
 		return
 	}
-	s.Platform = normalizeAccountRulePlatform(s.Platform)
-	s.AccountType = normalizeAccountRuleType(s.AccountType)
-	s.Description = strings.TrimSpace(s.Description)
-	s.ModelSet = normalizeAccountRuleTextList(s.ModelSet)
+	b.Platform = normalizeAccountRulePlatform(b.Platform)
+	b.BusinessType = normalizeAccountRuleType(b.BusinessType)
+	b.Description = strings.TrimSpace(b.Description)
 }
 
-func (s *AccountRuleScope) Validate() error {
-	if s == nil {
-		return fmt.Errorf("scope is required")
+func (b *AccountRuleBinding) Validate() error {
+	if b == nil {
+		return fmt.Errorf("binding is required")
 	}
-	s.Normalize()
-	if s.Platform == "" {
+	b.Normalize()
+	if b.Platform == "" {
 		return fmt.Errorf("platform is required")
+	}
+	return nil
+}
+
+func (c *AccountRuleModelCollection) Normalize() {
+	if c == nil {
+		return
+	}
+	c.Name = strings.TrimSpace(c.Name)
+	c.Description = strings.TrimSpace(c.Description)
+	c.Models = normalizeAccountRuleTextList(c.Models)
+}
+
+func (c *AccountRuleModelCollection) Validate() error {
+	if c == nil {
+		return fmt.Errorf("model collection is required")
+	}
+	c.Normalize()
+	if c.Name == "" {
+		return fmt.Errorf("model collection name is required")
+	}
+	return nil
+}
+
+func (c *AccountRuleErrorCollection) Normalize() {
+	if c == nil {
+		return
+	}
+	c.Name = strings.TrimSpace(c.Name)
+	c.Description = strings.TrimSpace(c.Description)
+}
+
+func (c *AccountRuleErrorCollection) Validate() error {
+	if c == nil {
+		return fmt.Errorf("error collection is required")
+	}
+	c.Normalize()
+	if c.Name == "" {
+		return fmt.Errorf("error collection name is required")
 	}
 	return nil
 }

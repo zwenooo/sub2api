@@ -9,9 +9,9 @@
       <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div class="space-y-1">
-            <div class="text-sm font-semibold text-gray-900 dark:text-white">统一管理平台 / 平台+业务类型的模型集合与错误规则</div>
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">先维护模型集合、错误规则集合，再由平台 + 业务类型绑定生效</div>
             <div class="text-xs text-gray-500 dark:text-gray-400">
-              作用域优先级为“平台+业务类型”高于“平台”。同一作用域下同时管理模型集合、错误匹配条件和命中后的动作。
+              绑定优先级为“平台 + 业务类型”高于“平台”。集合本身独立维护，不依赖先选中某个绑定。
             </div>
             <div
               v-if="draftHint"
@@ -61,68 +61,71 @@
         <Icon name="refresh" size="lg" class="animate-spin text-gray-400" />
       </div>
 
-      <div v-else class="grid gap-4 lg:grid-cols-[320px,minmax(0,1fr)]">
+      <div v-else class="grid gap-4 xl:grid-cols-[320px,minmax(0,1fr)]">
         <div class="space-y-4">
           <section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
             <div class="mb-3 flex items-center justify-between gap-2">
               <div>
-                <div class="text-sm font-semibold text-gray-900 dark:text-white">已配置作用域</div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">共 {{ catalog?.scopes.length ?? 0 }} 个</div>
+                <div class="text-sm font-semibold text-gray-900 dark:text-white">绑定关系</div>
+                <div class="text-xs text-gray-500 dark:text-gray-400">共 {{ catalog?.bindings.length ?? 0 }} 个</div>
               </div>
-              <button type="button" class="btn btn-primary btn-sm" @click="openCreateScope()">
+              <button type="button" class="btn btn-primary btn-sm" @click="openCreateBinding()">
                 <Icon name="plus" size="sm" class="mr-1" />
                 新建
               </button>
             </div>
 
-            <div v-if="!catalog?.scopes.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
-              还没有任何规则作用域。
+            <div v-if="!catalog?.bindings.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+              还没有任何绑定关系。
             </div>
 
             <div v-else class="space-y-2">
               <button
-                v-for="scope in catalog.scopes"
-                :key="scope.id"
+                v-for="binding in catalog.bindings"
+                :key="binding.id"
                 type="button"
                 :class="[
                   'w-full rounded-xl border px-3 py-3 text-left transition-colors',
-                  scope.id === selectedScopeId
+                  binding.id === selectedBindingId
                     ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
                     : 'border-gray-200 hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700'
                 ]"
-                @click="selectedScopeId = scope.id"
+                @click="selectedBindingId = binding.id"
               >
                 <div class="flex items-start justify-between gap-3">
                   <div class="min-w-0">
                     <div class="flex flex-wrap items-center gap-2">
                       <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
-                        <PlatformIcon :platform="scope.platform" size="xs" />
-                        <span>{{ formatPlatformLabel(scope.platform) }}</span>
+                        <PlatformIcon :platform="binding.platform" size="xs" />
+                        <span>{{ formatPlatformLabel(binding.platform) }}</span>
                       </span>
                       <span
                         :class="[
                           'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                          scopeTypeBadgeClass(scope.account_type)
+                          businessTypeBadgeClass(binding.business_type)
                         ]"
                       >
-                        {{ formatScopeTypeLabel(scope.platform, scope.account_type) }}
+                        {{ formatBusinessTypeLabel(binding.business_type) }}
                       </span>
                       <span
                         :class="[
                           'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                          scope.enabled
+                          binding.enabled
                             ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
                             : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
                         ]"
                       >
-                        {{ scope.enabled ? '启用' : '停用' }}
+                        {{ binding.enabled ? '启用' : '停用' }}
                       </span>
                     </div>
                     <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                      模型 {{ scope.model_set.length }} 个 · 规则 {{ scope.rules.length }} 条
+                      模型集合：{{ resolveModelCollectionName(binding.model_collection_id) || '未绑定' }}
                     </div>
-                    <div v-if="scope.description" class="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
-                      {{ scope.description }}
+                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      错误集合：{{ resolveErrorCollectionName(binding.error_collection_id) || '未绑定' }}
+                    </div>
+                    <div v-if="binding.description" class="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
+                      {{ binding.description }}
                     </div>
                   </div>
                   <Icon name="chevronRight" size="sm" class="mt-0.5 text-gray-400" />
@@ -133,38 +136,38 @@
 
           <section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
             <div class="mb-3">
-              <div class="text-sm font-semibold text-gray-900 dark:text-white">从现有账号快速建作用域</div>
+              <div class="text-sm font-semibold text-gray-900 dark:text-white">从现有账号快速建绑定</div>
               <div class="text-xs text-gray-500 dark:text-gray-400">
-                账号管理里出现过的平台 / 业务类型组合，都可以直接一键生成作用域。
+                账号管理里出现过的平台 / 业务类型组合，都可以直接一键生成绑定。
               </div>
             </div>
 
-            <div v-if="!unconfiguredObservedScopes.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+            <div v-if="!unconfiguredObservedBindings.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
               当前已覆盖所有已观测到的平台 / 业务类型组合。
             </div>
 
             <div v-else class="space-y-2">
               <button
-                v-for="scope in unconfiguredObservedScopes"
-                :key="observedScopeKey(scope)"
+                v-for="binding in unconfiguredObservedBindings"
+                :key="observedBindingKey(binding)"
                 type="button"
                 class="flex w-full items-center justify-between rounded-xl border border-dashed border-gray-200 px-3 py-2.5 text-left hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700"
-                @click="openCreateScope(scope)"
+                @click="openCreateBinding(binding)"
               >
                 <div class="flex min-w-0 items-center gap-2">
                   <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
-                    <PlatformIcon :platform="scope.platform" size="xs" />
-                    <span>{{ formatPlatformLabel(scope.platform) }}</span>
+                    <PlatformIcon :platform="binding.platform" size="xs" />
+                    <span>{{ formatPlatformLabel(binding.platform) }}</span>
                   </span>
                   <span
                     :class="[
                       'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                      scopeTypeBadgeClass(scope.account_type)
+                      businessTypeBadgeClass(binding.business_type)
                     ]"
                   >
-                    {{ formatScopeTypeLabel(scope.platform, scope.account_type) }}
+                    {{ formatBusinessTypeLabel(binding.business_type) }}
                   </span>
-                  <span class="text-xs text-gray-500 dark:text-gray-400">{{ scope.account_count }} 个账号</span>
+                  <span class="text-xs text-gray-500 dark:text-gray-400">{{ binding.account_count }} 个账号</span>
                 </div>
                 <span class="text-xs font-medium text-primary-600 dark:text-primary-300">创建</span>
               </button>
@@ -174,180 +177,285 @@
 
         <div class="space-y-4">
           <section
-            v-if="selectedScope"
+            v-if="selectedBinding"
             class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800"
           >
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div class="space-y-2">
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
-                    <PlatformIcon :platform="selectedScope.platform" size="xs" />
-                    <span>{{ formatPlatformLabel(selectedScope.platform) }}</span>
+                    <PlatformIcon :platform="selectedBinding.platform" size="xs" />
+                    <span>{{ formatPlatformLabel(selectedBinding.platform) }}</span>
                   </span>
                   <span
                     :class="[
                       'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                      scopeTypeBadgeClass(selectedScope.account_type)
+                      businessTypeBadgeClass(selectedBinding.business_type)
                     ]"
                   >
-                    {{ formatScopeTypeLabel(selectedScope.platform, selectedScope.account_type) }}
+                    {{ formatBusinessTypeLabel(selectedBinding.business_type) }}
                   </span>
                   <span
                     :class="[
                       'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                      selectedScope.enabled
+                      selectedBinding.enabled
                         ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
                         : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
                     ]"
                   >
-                    {{ selectedScope.enabled ? '启用' : '停用' }}
+                    {{ selectedBinding.enabled ? '启用' : '停用' }}
                   </span>
                 </div>
                 <div class="text-xs text-gray-500 dark:text-gray-400">
-                  这个作用域下的模型集合会在没有账号级显式模型映射时生效；错误规则按优先级从小到大匹配。
+                  绑定只负责指定这个平台 / 业务类型实际使用哪个模型集合、哪个错误集合。
                 </div>
-                <div v-if="selectedScope.description" class="text-sm text-gray-600 dark:text-gray-300">
-                  {{ selectedScope.description }}
+                <div class="text-sm text-gray-600 dark:text-gray-300">
+                  模型集合：{{ resolveModelCollectionName(selectedBinding.model_collection_id) || '未绑定' }}
+                </div>
+                <div class="text-sm text-gray-600 dark:text-gray-300">
+                  错误集合：{{ resolveErrorCollectionName(selectedBinding.error_collection_id) || '未绑定' }}
+                </div>
+                <div v-if="selectedBinding.description" class="text-sm text-gray-600 dark:text-gray-300">
+                  {{ selectedBinding.description }}
                 </div>
               </div>
               <div class="flex flex-wrap gap-2">
-                <button type="button" class="btn btn-secondary btn-sm" @click="openEditScope(selectedScope)">
-                  编辑作用域
+                <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
+                  编辑绑定
                 </button>
-                <button type="button" class="btn btn-danger btn-sm" @click="removeScope(selectedScope)">
-                  删除作用域
+                <button type="button" class="btn btn-danger btn-sm" @click="removeBinding(selectedBinding)">
+                  删除绑定
                 </button>
               </div>
             </div>
           </section>
 
-          <section
-            v-if="selectedScope"
-            class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800"
-          >
+          <section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
             <div class="mb-3 flex items-center justify-between gap-2">
               <div>
                 <div class="text-sm font-semibold text-gray-900 dark:text-white">模型集合</div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">当前 {{ selectedScope.model_set.length }} 个模型</div>
+                <div class="text-xs text-gray-500 dark:text-gray-400">共 {{ catalog?.model_collections.length ?? 0 }} 个</div>
               </div>
-              <button type="button" class="btn btn-secondary btn-sm" @click="openEditScope(selectedScope)">
-                编辑模型集合
-              </button>
-            </div>
-
-            <div v-if="selectedScope.model_set.length" class="flex flex-wrap gap-2">
-              <span
-                v-for="model in selectedScope.model_set"
-                :key="model"
-                class="inline-flex max-w-full items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-300"
-              >
-                <span class="truncate">{{ model }}</span>
-              </span>
-            </div>
-            <div v-else class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
-              还没有配置模型集合，此作用域目前只会影响错误规则。
-            </div>
-          </section>
-
-          <section
-            v-if="selectedScope"
-            class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800"
-          >
-            <div class="mb-3 flex items-center justify-between gap-2">
-              <div>
-                <div class="text-sm font-semibold text-gray-900 dark:text-white">错误规则</div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">
-                  命中后可执行踢出号池、转发请求、删除账号、篡改响应。
-                </div>
-              </div>
-              <button type="button" class="btn btn-primary btn-sm" @click="openCreateRule()">
+              <button type="button" class="btn btn-primary btn-sm" @click="openCreateModelCollection()">
                 <Icon name="plus" size="sm" class="mr-1" />
-                新建规则
+                新建
               </button>
             </div>
 
-            <div v-if="!selectedScope.rules.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
-              这个作用域还没有任何错误规则。
+            <div v-if="!catalog?.model_collections.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+              还没有任何模型集合。
             </div>
 
-            <div v-else class="overflow-hidden rounded-xl border border-gray-200 dark:border-dark-700">
+            <div v-else class="grid gap-4 xl:grid-cols-[280px,minmax(0,1fr)]">
+              <div class="space-y-2">
+                <button
+                  v-for="collection in catalog.model_collections"
+                  :key="collection.id"
+                  type="button"
+                  :class="[
+                    'w-full rounded-xl border px-3 py-3 text-left transition-colors',
+                    collection.id === selectedModelCollectionId
+                      ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
+                      : 'border-gray-200 hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700'
+                  ]"
+                  @click="selectedModelCollectionId = collection.id"
+                >
+                  <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ collection.name }}</div>
+                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    模型 {{ collection.models.length }} 个
+                  </div>
+                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    绑定 {{ modelCollectionBindingCounts[collection.id] || 0 }} 个
+                  </div>
+                </button>
+              </div>
+
               <div
-                v-for="rule in selectedScope.rules"
-                :key="rule.id"
-                class="border-b border-gray-200 px-4 py-4 last:border-b-0 dark:border-dark-700"
+                v-if="selectedModelCollection"
+                class="rounded-xl border border-gray-200 p-4 dark:border-dark-700"
               >
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                  <div class="min-w-0 flex-1 space-y-2">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <span class="text-sm font-semibold text-gray-900 dark:text-white">{{ rule.name }}</span>
-                      <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600 dark:bg-dark-700 dark:text-gray-300">
-                        优先级 {{ rule.priority }}
-                      </span>
-                      <span
-                        :class="[
-                          'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                          rule.enabled
-                            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
-                            : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
-                        ]"
-                      >
-                        {{ rule.enabled ? '启用' : '停用' }}
-                      </span>
+                  <div>
+                    <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ selectedModelCollection.name }}</div>
+                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      当前 {{ selectedModelCollection.models.length }} 个模型，已被 {{ modelCollectionBindingCounts[selectedModelCollection.id] || 0 }} 个绑定使用。
                     </div>
-
-                    <div class="flex flex-wrap gap-2 text-xs">
-                      <span
-                        v-for="code in rule.status_codes"
-                        :key="`${rule.id}-code-${code}`"
-                        class="inline-flex rounded-full bg-red-50 px-2 py-0.5 font-medium text-red-700 dark:bg-red-900/20 dark:text-red-300"
-                      >
-                        {{ code }}
-                      </span>
-                      <span
-                        v-for="keyword in rule.keywords"
-                        :key="`${rule.id}-kw-${keyword}`"
-                        class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-300"
-                      >
-                        {{ keyword }}
-                      </span>
-                    </div>
-
-                    <div class="flex flex-wrap gap-2 text-xs text-gray-600 dark:text-gray-300">
-                      <span class="rounded-full bg-primary-50 px-2 py-0.5 dark:bg-primary-900/20">
-                        {{ rule.match_mode === 'all' ? '状态码 + 关键词都要命中' : '状态码 / 关键词任一命中' }}
-                      </span>
-                      <span
-                        v-for="action in formatRuleActions(rule)"
-                        :key="`${rule.id}-${action}`"
-                        class="rounded-full bg-amber-50 px-2 py-0.5 dark:bg-amber-900/20"
-                      >
-                        {{ action }}
-                      </span>
-                    </div>
-
-                    <div v-if="rule.description" class="text-sm text-gray-600 dark:text-gray-300">
-                      {{ rule.description }}
+                    <div v-if="selectedModelCollection.description" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                      {{ selectedModelCollection.description }}
                     </div>
                   </div>
-
                   <div class="flex flex-wrap gap-2">
-                    <button type="button" class="btn btn-secondary btn-sm" @click="openEditRule(rule)">
-                      编辑
+                    <button type="button" class="btn btn-secondary btn-sm" @click="openEditModelCollection(selectedModelCollection)">
+                      编辑集合
                     </button>
-                    <button type="button" class="btn btn-danger btn-sm" @click="removeRule(rule)">
-                      删除
+                    <button type="button" class="btn btn-danger btn-sm" @click="removeModelCollection(selectedModelCollection)">
+                      删除集合
                     </button>
                   </div>
+                </div>
+
+                <div v-if="selectedModelCollection.models.length" class="mt-4 flex flex-wrap gap-2">
+                  <span
+                    v-for="model in selectedModelCollection.models"
+                    :key="model"
+                    class="inline-flex max-w-full items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-300"
+                  >
+                    <span class="truncate">{{ model }}</span>
+                  </span>
+                </div>
+                <div v-else class="mt-4 rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+                  这个模型集合里还没有任何模型。
                 </div>
               </div>
             </div>
           </section>
 
-          <section
-            v-else
-            class="rounded-xl border border-dashed border-gray-200 bg-white px-4 py-16 text-center text-sm text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400"
-          >
-            先在左侧选择或创建一个作用域，再配置模型集合和错误规则。
+          <section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
+            <div class="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <div class="text-sm font-semibold text-gray-900 dark:text-white">错误规则集合</div>
+                <div class="text-xs text-gray-500 dark:text-gray-400">共 {{ catalog?.error_collections.length ?? 0 }} 个</div>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" class="btn btn-secondary btn-sm" :disabled="!selectedErrorCollection" @click="openCreateRule()">
+                  新建规则
+                </button>
+                <button type="button" class="btn btn-primary btn-sm" @click="openCreateErrorCollection()">
+                  <Icon name="plus" size="sm" class="mr-1" />
+                  新建集合
+                </button>
+              </div>
+            </div>
+
+            <div v-if="!catalog?.error_collections.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+              还没有任何错误规则集合。
+            </div>
+
+            <div v-else class="grid gap-4 xl:grid-cols-[280px,minmax(0,1fr)]">
+              <div class="space-y-2">
+                <button
+                  v-for="collection in catalog.error_collections"
+                  :key="collection.id"
+                  type="button"
+                  :class="[
+                    'w-full rounded-xl border px-3 py-3 text-left transition-colors',
+                    collection.id === selectedErrorCollectionId
+                      ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
+                      : 'border-gray-200 hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700'
+                  ]"
+                  @click="selectedErrorCollectionId = collection.id"
+                >
+                  <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ collection.name }}</div>
+                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    规则 {{ collection.rules.length }} 条
+                  </div>
+                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    绑定 {{ errorCollectionBindingCounts[collection.id] || 0 }} 个
+                  </div>
+                </button>
+              </div>
+
+              <div
+                v-if="selectedErrorCollection"
+                class="space-y-4 rounded-xl border border-gray-200 p-4 dark:border-dark-700"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ selectedErrorCollection.name }}</div>
+                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      当前 {{ selectedErrorCollection.rules.length }} 条规则，已被 {{ errorCollectionBindingCounts[selectedErrorCollection.id] || 0 }} 个绑定使用。
+                    </div>
+                    <div v-if="selectedErrorCollection.description" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                      {{ selectedErrorCollection.description }}
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <button type="button" class="btn btn-secondary btn-sm" @click="openEditErrorCollection(selectedErrorCollection)">
+                      编辑集合
+                    </button>
+                    <button type="button" class="btn btn-danger btn-sm" @click="removeErrorCollection(selectedErrorCollection)">
+                      删除集合
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="!selectedErrorCollection.rules.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+                  这个错误集合还没有任何规则。
+                </div>
+
+                <div v-else class="overflow-hidden rounded-xl border border-gray-200 dark:border-dark-700">
+                  <div
+                    v-for="rule in selectedErrorCollection.rules"
+                    :key="rule.id"
+                    class="border-b border-gray-200 px-4 py-4 last:border-b-0 dark:border-dark-700"
+                  >
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                      <div class="min-w-0 flex-1 space-y-2">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <span class="text-sm font-semibold text-gray-900 dark:text-white">{{ rule.name }}</span>
+                          <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+                            优先级 {{ rule.priority }}
+                          </span>
+                          <span
+                            :class="[
+                              'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
+                              rule.enabled
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
+                                : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
+                            ]"
+                          >
+                            {{ rule.enabled ? '启用' : '停用' }}
+                          </span>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2 text-xs">
+                          <span
+                            v-for="code in rule.status_codes"
+                            :key="`${rule.id}-code-${code}`"
+                            class="inline-flex rounded-full bg-red-50 px-2 py-0.5 font-medium text-red-700 dark:bg-red-900/20 dark:text-red-300"
+                          >
+                            {{ code }}
+                          </span>
+                          <span
+                            v-for="keyword in rule.keywords"
+                            :key="`${rule.id}-kw-${keyword}`"
+                            class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-300"
+                          >
+                            {{ keyword }}
+                          </span>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2 text-xs text-gray-600 dark:text-gray-300">
+                          <span class="rounded-full bg-primary-50 px-2 py-0.5 dark:bg-primary-900/20">
+                            {{ rule.match_mode === 'all' ? '状态码 + 关键词都要命中' : '状态码 / 关键词任一命中' }}
+                          </span>
+                          <span
+                            v-for="action in formatRuleActions(rule)"
+                            :key="`${rule.id}-${action}`"
+                            class="rounded-full bg-amber-50 px-2 py-0.5 dark:bg-amber-900/20"
+                          >
+                            {{ action }}
+                          </span>
+                        </div>
+
+                        <div v-if="rule.description" class="text-sm text-gray-600 dark:text-gray-300">
+                          {{ rule.description }}
+                        </div>
+                      </div>
+
+                      <div class="flex flex-wrap gap-2">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="openEditRule(rule)">
+                          编辑
+                        </button>
+                        <button type="button" class="btn btn-danger btn-sm" @click="removeRule(rule)">
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </section>
         </div>
       </div>
@@ -362,52 +470,132 @@
     </template>
 
     <BaseDialog
-      :show="showScopeEditor"
-      :title="editingScopeId ? '编辑作用域' : '新建作用域'"
+      :show="showBindingEditor"
+      :title="editingBindingId ? '编辑绑定' : '新建绑定'"
       width="wide"
-      @close="closeScopeEditor"
+      @close="closeBindingEditor"
     >
-      <form class="space-y-4" @submit.prevent="saveScope">
+      <form class="space-y-4" @submit.prevent="saveBinding">
         <div class="grid gap-4 md:grid-cols-2">
           <div>
             <label class="input-label">平台</label>
-            <input v-model.trim="scopeForm.platform" type="text" class="input" placeholder="例如 openai / gemini" />
+            <input v-model.trim="bindingForm.platform" type="text" class="input" placeholder="例如 openai / gemini" />
           </div>
           <div>
             <label class="input-label">业务类型</label>
-            <input v-model.trim="scopeForm.account_type" type="text" class="input" placeholder="例如 team / google_ai_pro / free-tier；留空表示平台级作用域" />
+            <input v-model.trim="bindingForm.business_type" type="text" class="input" placeholder="例如 team / google_ai_pro；留空表示平台级绑定" />
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">OpenAI / Sora 优先取 plan_type；Gemini 取 tier_id 或 oauth_type；Antigravity 取订阅 tier。</p>
           </div>
         </div>
 
         <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <input v-model="scopeForm.enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-          <span>启用这个作用域</span>
+          <input v-model="bindingForm.enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+          <span>启用这个绑定</span>
         </label>
 
-        <div>
-          <label class="input-label">作用域说明</label>
-          <input v-model.trim="scopeForm.description" type="text" class="input" placeholder="例如：OpenAI Team 账号统一规则" />
+        <div class="grid gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">模型集合</label>
+            <select v-model="bindingForm.model_collection_id" class="input">
+              <option value="">未绑定</option>
+              <option v-for="collection in catalog?.model_collections ?? []" :key="collection.id" :value="String(collection.id)">
+                {{ collection.name }}
+              </option>
+            </select>
+            <button type="button" class="mt-2 text-xs font-medium text-primary-600 dark:text-primary-300" @click="openCreateModelCollection(true)">
+              在这里新建模型集合
+            </button>
+          </div>
+          <div>
+            <label class="input-label">错误集合</label>
+            <select v-model="bindingForm.error_collection_id" class="input">
+              <option value="">未绑定</option>
+              <option v-for="collection in catalog?.error_collections ?? []" :key="collection.id" :value="String(collection.id)">
+                {{ collection.name }}
+              </option>
+            </select>
+            <button type="button" class="mt-2 text-xs font-medium text-primary-600 dark:text-primary-300" @click="openCreateErrorCollection(true)">
+              在这里新建错误集合
+            </button>
+          </div>
         </div>
 
         <div>
-          <label class="input-label">模型集合</label>
-          <ModelWhitelistSelector
-            v-model="scopeForm.model_set"
-            :platform="scopeForm.platform"
-          />
+          <label class="input-label">绑定说明</label>
+          <input v-model.trim="bindingForm.description" type="text" class="input" placeholder="例如：OpenAI Team 统一绑定到团队模型集合和限流规则" />
         </div>
 
-        <div v-if="pendingDraft && !editingScopeId" class="rounded-xl bg-primary-50 px-3 py-2 text-xs text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">
-          当前有一条来自运维页面的错误草稿。保存作用域后，会自动继续创建这条规则。
+        <div v-if="pendingDraft" class="rounded-xl bg-primary-50 px-3 py-2 text-xs text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">
+          当前有一条来自运维页面的错误草稿。只要这个绑定最终关联了错误集合，保存后会自动继续创建这条规则。
         </div>
       </form>
 
       <template #footer>
         <div class="flex justify-end gap-2">
-          <button type="button" class="btn btn-secondary" @click="closeScopeEditor">取消</button>
-          <button type="button" class="btn btn-primary" :disabled="savingScope" @click="saveScope">
-            {{ savingScope ? '保存中...' : '保存作用域' }}
+          <button type="button" class="btn btn-secondary" @click="closeBindingEditor">取消</button>
+          <button type="button" class="btn btn-primary" :disabled="savingBinding" @click="saveBinding">
+            {{ savingBinding ? '保存中...' : '保存绑定' }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showModelCollectionEditor"
+      :title="editingModelCollectionId ? '编辑模型集合' : '新建模型集合'"
+      width="wide"
+      @close="closeModelCollectionEditor"
+    >
+      <form class="space-y-4" @submit.prevent="saveModelCollection">
+        <div>
+          <label class="input-label">集合名称</label>
+          <input v-model.trim="modelCollectionForm.name" type="text" class="input" placeholder="例如：OpenAI Team 模型集合" />
+        </div>
+
+        <div>
+          <label class="input-label">集合说明</label>
+          <input v-model.trim="modelCollectionForm.description" type="text" class="input" placeholder="例如：团队账号允许调度的模型列表" />
+        </div>
+
+        <div>
+          <label class="input-label">模型列表</label>
+          <ModelWhitelistSelector v-model="modelCollectionForm.models" />
+        </div>
+      </form>
+
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn btn-secondary" @click="closeModelCollectionEditor">取消</button>
+          <button type="button" class="btn btn-primary" :disabled="savingModelCollection" @click="saveModelCollection">
+            {{ savingModelCollection ? '保存中...' : '保存模型集合' }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showErrorCollectionEditor"
+      :title="editingErrorCollectionId ? '编辑错误集合' : '新建错误集合'"
+      width="wide"
+      @close="closeErrorCollectionEditor"
+    >
+      <form class="space-y-4" @submit.prevent="saveErrorCollection">
+        <div>
+          <label class="input-label">集合名称</label>
+          <input v-model.trim="errorCollectionForm.name" type="text" class="input" placeholder="例如：OpenAI Team 错误集合" />
+        </div>
+
+        <div>
+          <label class="input-label">集合说明</label>
+          <textarea v-model.trim="errorCollectionForm.description" rows="4" class="input" placeholder="例如：429 转发 + 失效账号踢出；400 模型不支持则篡改响应" />
+        </div>
+      </form>
+
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn btn-secondary" @click="closeErrorCollectionEditor">取消</button>
+          <button type="button" class="btn btn-primary" :disabled="savingErrorCollection" @click="saveErrorCollection">
+            {{ savingErrorCollection ? '保存中...' : '保存错误集合' }}
           </button>
         </div>
       </template>
@@ -420,6 +608,10 @@
       @close="closeRuleEditor"
     >
       <form class="space-y-4" @submit.prevent="saveRule">
+        <div class="rounded-xl bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-dark-900 dark:text-gray-300">
+          当前错误集合：{{ selectedRuleCollectionName || '未选择' }}
+        </div>
+
         <div class="grid gap-4 md:grid-cols-2">
           <div>
             <label class="input-label">规则名称</label>
@@ -524,23 +716,23 @@ model is not supported"
               rows="3"
               class="input"
               :disabled="ruleForm.passthrough_body"
-              placeholder="如果不透传上游消息，这里填写返回给用户的内容"
+              placeholder="返回给用户的错误消息"
             />
           </div>
         </div>
 
         <div>
           <label class="input-label">规则说明</label>
-          <input v-model.trim="ruleForm.description" type="text" class="input" placeholder="例如：429 命中时切号并保持用户无感" />
+          <input v-model.trim="ruleForm.description" type="text" class="input" placeholder="例如：429 时切换到新的正常账号" />
         </div>
 
         <div>
           <label class="input-label">样例响应</label>
           <textarea
             v-model="ruleForm.sample_response"
-            rows="6"
+            rows="5"
             class="input font-mono text-xs"
-            placeholder="建议直接粘贴运维页面里看到的响应详情，便于后续确认这条规则为什么存在。"
+            placeholder="可粘贴完整错误响应，方便后续排查"
           />
         </div>
       </form>
@@ -563,7 +755,20 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
-import { accountRulesAPI, type AccountRuleCatalog, type AccountRuleDraft, type AccountRuleErrorRule, type AccountRuleObservedScope, type AccountRuleScope, type UpsertAccountRuleRequest, type UpsertAccountRuleScopeRequest } from '@/api/admin/accountRules'
+import {
+  accountRulesAPI,
+  type AccountRuleBinding,
+  type AccountRuleCatalog,
+  type AccountRuleDraft,
+  type AccountRuleErrorCollection,
+  type AccountRuleErrorRule,
+  type AccountRuleModelCollection,
+  type AccountRuleObservedBinding,
+  type UpsertAccountRuleBindingRequest,
+  type UpsertAccountRuleErrorCollectionRequest,
+  type UpsertAccountRuleModelCollectionRequest,
+  type UpsertAccountRuleRequest
+} from '@/api/admin/accountRules'
 import { useAppStore } from '@/stores'
 
 type DraftSource = 'request-error' | 'upstream-error'
@@ -585,27 +790,53 @@ const appStore = useAppStore()
 
 const loading = ref(false)
 const savingSettings = ref(false)
-const savingScope = ref(false)
+const savingBinding = ref(false)
+const savingModelCollection = ref(false)
+const savingErrorCollection = ref(false)
 const savingRule = ref(false)
-const showScopeEditor = ref(false)
+
+const showBindingEditor = ref(false)
+const showModelCollectionEditor = ref(false)
+const showErrorCollectionEditor = ref(false)
 const showRuleEditor = ref(false)
-const selectedScopeId = ref<number | null>(null)
-const editingScopeId = ref<number | null>(null)
+
+const selectedBindingId = ref<number | null>(null)
+const selectedModelCollectionId = ref<number | null>(null)
+const selectedErrorCollectionId = ref<number | null>(null)
+
+const editingBindingId = ref<number | null>(null)
+const editingModelCollectionId = ref<number | null>(null)
+const editingErrorCollectionId = ref<number | null>(null)
 const editingRuleId = ref<number | null>(null)
-const editingRuleScopeId = ref<number | null>(null)
+const editingRuleCollectionId = ref<number | null>(null)
+
 const pendingDraft = ref<AccountRuleDraft | null>(null)
 const appliedDraftKey = ref('')
 const catalog = ref<AccountRuleCatalog | null>(null)
+const autoAssignModelCollectionToBinding = ref(false)
+const autoAssignErrorCollectionToBinding = ref(false)
 
 const settingsForm = reactive({
   forward_max_attempts: 3
 })
 
-const scopeForm = reactive({
+const bindingForm = reactive({
   platform: '',
-  account_type: '',
+  business_type: '',
   enabled: true,
-  model_set: [] as string[],
+  model_collection_id: '',
+  error_collection_id: '',
+  description: ''
+})
+
+const modelCollectionForm = reactive({
+  name: '',
+  models: [] as string[],
+  description: ''
+})
+
+const errorCollectionForm = reactive({
+  name: '',
   description: ''
 })
 
@@ -629,8 +860,20 @@ const ruleForm = reactive({
   sample_response: ''
 })
 
-const selectedScope = computed(() => {
-  return catalog.value?.scopes.find(scope => scope.id === selectedScopeId.value) ?? null
+const selectedBinding = computed(() => {
+  return catalog.value?.bindings.find(binding => binding.id === selectedBindingId.value) ?? null
+})
+
+const selectedModelCollection = computed(() => {
+  return catalog.value?.model_collections.find(collection => collection.id === selectedModelCollectionId.value) ?? null
+})
+
+const selectedErrorCollection = computed(() => {
+  return catalog.value?.error_collections.find(collection => collection.id === selectedErrorCollectionId.value) ?? null
+})
+
+const selectedRuleCollectionName = computed(() => {
+  return resolveErrorCollectionName(editingRuleCollectionId.value)
 })
 
 const draftKey = computed(() => {
@@ -643,20 +886,42 @@ const draftHint = computed(() => {
   return `正在处理来自 /admin/ops 的错误草稿：${props.draftSource} #${props.draftId}`
 })
 
-const configuredScopeKeys = computed(() => {
-  return new Set((catalog.value?.scopes ?? []).map(scopeKey))
+const configuredBindingKeys = computed(() => {
+  return new Set((catalog.value?.bindings ?? []).map(bindingKey))
 })
 
-const unconfiguredObservedScopes = computed(() => {
-  return (catalog.value?.observed_scopes ?? []).filter(scope => !configuredScopeKeys.value.has(observedScopeKey(scope)))
+const unconfiguredObservedBindings = computed(() => {
+  return (catalog.value?.observed_bindings ?? []).filter(binding => !configuredBindingKeys.value.has(observedBindingKey(binding)))
 })
 
-function scopeKey(scope: Pick<AccountRuleScope, 'platform' | 'account_type'>): string {
-  return `${scope.platform.trim().toLowerCase()}::${scope.account_type.trim().toLowerCase()}`
+const modelCollectionBindingCounts = computed<Record<number, number>>(() => {
+  const counts: Record<number, number> = {}
+  for (const binding of catalog.value?.bindings ?? []) {
+    if (!binding.model_collection_id) continue
+    counts[binding.model_collection_id] = (counts[binding.model_collection_id] || 0) + 1
+  }
+  return counts
+})
+
+const errorCollectionBindingCounts = computed<Record<number, number>>(() => {
+  const counts: Record<number, number> = {}
+  for (const binding of catalog.value?.bindings ?? []) {
+    if (!binding.error_collection_id) continue
+    counts[binding.error_collection_id] = (counts[binding.error_collection_id] || 0) + 1
+  }
+  return counts
+})
+
+function bindingKey(binding: Pick<AccountRuleBinding, 'platform' | 'business_type'>): string {
+  return `${binding.platform.trim().toLowerCase()}::${binding.business_type.trim().toLowerCase()}`
 }
 
-function observedScopeKey(scope: Pick<AccountRuleObservedScope, 'platform' | 'account_type'>): string {
-  return `${scope.platform.trim().toLowerCase()}::${scope.account_type.trim().toLowerCase()}`
+function observedBindingKey(binding: Pick<AccountRuleObservedBinding, 'platform' | 'business_type'>): string {
+  return `${binding.platform.trim().toLowerCase()}::${binding.business_type.trim().toLowerCase()}`
+}
+
+function draftTargetKey(draft: Pick<AccountRuleDraft, 'platform' | 'business_type'>): string {
+  return `${draft.platform.trim().toLowerCase()}::${draft.business_type.trim().toLowerCase()}`
 }
 
 function formatPlatformLabel(platform: string): string {
@@ -677,8 +942,8 @@ function formatPlatformLabel(platform: string): string {
   }
 }
 
-function formatScopeTypeLabel(platform: string, accountType: string): string {
-  const normalized = accountType.trim().toLowerCase()
+function formatBusinessTypeLabel(businessType: string): string {
+  const normalized = businessType.trim().toLowerCase()
   if (!normalized) return '平台级'
 
   switch (normalized) {
@@ -720,26 +985,45 @@ function formatScopeTypeLabel(platform: string, accountType: string): string {
     case 'bedrock':
       return 'Bedrock'
     default:
-      if (platform.trim().toLowerCase() === 'sora' && normalized === 'team') {
-        return 'Team'
-      }
-      return accountType
+      return businessType
   }
 }
 
-function scopeTypeBadgeClass(accountType: string): string {
-  if (!accountType.trim()) {
+function businessTypeBadgeClass(businessType: string): string {
+  if (!businessType.trim()) {
     return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
   }
   return 'bg-primary-50 text-primary-700 dark:bg-primary-900/20 dark:text-primary-300'
 }
 
-function resetScopeForm() {
-  scopeForm.platform = ''
-  scopeForm.account_type = ''
-  scopeForm.enabled = true
-  scopeForm.model_set = []
-  scopeForm.description = ''
+function resolveModelCollectionName(id?: number | null): string {
+  if (!id) return ''
+  return catalog.value?.model_collections.find(collection => collection.id === id)?.name || ''
+}
+
+function resolveErrorCollectionName(id?: number | null): string {
+  if (!id) return ''
+  return catalog.value?.error_collections.find(collection => collection.id === id)?.name || ''
+}
+
+function resetBindingForm() {
+  bindingForm.platform = ''
+  bindingForm.business_type = ''
+  bindingForm.enabled = true
+  bindingForm.model_collection_id = ''
+  bindingForm.error_collection_id = ''
+  bindingForm.description = ''
+}
+
+function resetModelCollectionForm() {
+  modelCollectionForm.name = ''
+  modelCollectionForm.models = []
+  modelCollectionForm.description = ''
+}
+
+function resetErrorCollectionForm() {
+  errorCollectionForm.name = ''
+  errorCollectionForm.description = ''
 }
 
 function resetRuleForm() {
@@ -762,27 +1046,49 @@ function resetRuleForm() {
   ruleForm.sample_response = ''
 }
 
-function syncSelection() {
-  const scopes = catalog.value?.scopes ?? []
-  if (!scopes.length) {
-    selectedScopeId.value = null
-    return
+function syncSelections() {
+  const bindings = catalog.value?.bindings ?? []
+  if (bindings.length > 0) {
+    if (!selectedBindingId.value || !bindings.some(binding => binding.id === selectedBindingId.value)) {
+      selectedBindingId.value = bindings[0].id
+    }
+  } else {
+    selectedBindingId.value = null
   }
-  if (!selectedScopeId.value || !scopes.some(scope => scope.id === selectedScopeId.value)) {
-    selectedScopeId.value = scopes[0].id
+
+  const modelCollections = catalog.value?.model_collections ?? []
+  if (modelCollections.length > 0) {
+    if (!selectedModelCollectionId.value || !modelCollections.some(collection => collection.id === selectedModelCollectionId.value)) {
+      selectedModelCollectionId.value = modelCollections[0].id
+    }
+  } else {
+    selectedModelCollectionId.value = null
+  }
+
+  const errorCollections = catalog.value?.error_collections ?? []
+  if (errorCollections.length > 0) {
+    if (!selectedErrorCollectionId.value || !errorCollections.some(collection => collection.id === selectedErrorCollectionId.value)) {
+      selectedErrorCollectionId.value = errorCollections[0].id
+    }
+  } else {
+    selectedErrorCollectionId.value = null
   }
 }
 
-async function loadCatalog(preferredScopeId?: number | null) {
+async function loadCatalog(preferred?: {
+  bindingId?: number | null
+  modelCollectionId?: number | null
+  errorCollectionId?: number | null
+}) {
   loading.value = true
   try {
     const data = await accountRulesAPI.getCatalog()
     catalog.value = data
     settingsForm.forward_max_attempts = data.settings.forward_max_attempts || 3
-    if (preferredScopeId) {
-      selectedScopeId.value = preferredScopeId
-    }
-    syncSelection()
+    if (preferred?.bindingId) selectedBindingId.value = preferred.bindingId
+    if (preferred?.modelCollectionId) selectedModelCollectionId.value = preferred.modelCollectionId
+    if (preferred?.errorCollectionId) selectedErrorCollectionId.value = preferred.errorCollectionId
+    syncSelections()
     await maybeApplyDraft()
   } catch (error: any) {
     console.error('[AccountRuleManagerModal] Failed to load catalog', error)
@@ -799,18 +1105,31 @@ async function maybeApplyDraft() {
   try {
     const draft = await accountRulesAPI.getOpsDraft(props.draftSource, props.draftId)
     pendingDraft.value = draft
-    if (draft.matched_scope_id) {
-      selectedScopeId.value = draft.matched_scope_id
-      openCreateRule(draft.rule, draft.matched_scope_id)
+
+    if (draft.matched_error_collection_id) {
+      selectedErrorCollectionId.value = draft.matched_error_collection_id
+      openCreateRule(draft.rule, draft.matched_error_collection_id)
       pendingDraft.value = null
+    } else if (draft.matched_binding_id) {
+      selectedBindingId.value = draft.matched_binding_id
+      const binding = catalog.value?.bindings.find(item => item.id === draft.matched_binding_id) ?? null
+      if (binding) {
+        openEditBinding(binding)
+      } else {
+        openCreateBinding({
+          platform: draft.platform,
+          business_type: draft.business_type
+        })
+      }
+      appStore.showInfo('已匹配到绑定，但它还没有绑定错误集合，请先绑定错误集合，再继续创建规则。')
     } else {
-      openCreateScope({
+      openCreateBinding({
         platform: draft.platform,
-        account_type: draft.account_type,
-        account_count: 0
+        business_type: draft.business_type
       })
-      appStore.showInfo('没有找到匹配的作用域，请先创建作用域，然后继续保存这条规则。')
+      appStore.showInfo('没有找到匹配绑定，请先创建绑定并关联错误集合。')
     }
+
     appliedDraftKey.value = draftKey.value
   } catch (error: any) {
     console.error('[AccountRuleManagerModal] Failed to load ops draft', error)
@@ -840,86 +1159,261 @@ async function saveSettings() {
   }
 }
 
-function openCreateScope(observed?: Partial<AccountRuleObservedScope>) {
-  editingScopeId.value = null
-  resetScopeForm()
-  scopeForm.platform = String(observed?.platform || '').trim()
-  scopeForm.account_type = String(observed?.account_type || '').trim()
-  showScopeEditor.value = true
+function openCreateBinding(prefill?: Partial<AccountRuleObservedBinding | AccountRuleDraft>) {
+  editingBindingId.value = null
+  resetBindingForm()
+  bindingForm.platform = String(prefill?.platform || '').trim()
+  bindingForm.business_type = String(prefill?.business_type || '').trim()
+  showBindingEditor.value = true
 }
 
-function openEditScope(scope: AccountRuleScope) {
-  editingScopeId.value = scope.id
-  scopeForm.platform = scope.platform
-  scopeForm.account_type = scope.account_type
-  scopeForm.enabled = scope.enabled
-  scopeForm.model_set = [...(scope.model_set || [])]
-  scopeForm.description = scope.description || ''
-  showScopeEditor.value = true
+function openEditBinding(binding: AccountRuleBinding) {
+  editingBindingId.value = binding.id
+  bindingForm.platform = binding.platform
+  bindingForm.business_type = binding.business_type
+  bindingForm.enabled = binding.enabled
+  bindingForm.model_collection_id = binding.model_collection_id ? String(binding.model_collection_id) : ''
+  bindingForm.error_collection_id = binding.error_collection_id ? String(binding.error_collection_id) : ''
+  bindingForm.description = binding.description || ''
+  showBindingEditor.value = true
 }
 
-function closeScopeEditor() {
-  showScopeEditor.value = false
-  editingScopeId.value = null
-  resetScopeForm()
+function closeBindingEditor() {
+  showBindingEditor.value = false
+  editingBindingId.value = null
+  resetBindingForm()
 }
 
-async function saveScope() {
-  if (!scopeForm.platform.trim()) {
+function parseOptionalId(value: string): number | null {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+async function saveBinding() {
+  if (!bindingForm.platform.trim()) {
     appStore.showError('平台不能为空')
     return
   }
 
-  const payload: UpsertAccountRuleScopeRequest = {
-    platform: scopeForm.platform.trim(),
-    account_type: scopeForm.account_type.trim(),
-    enabled: scopeForm.enabled,
-    model_set: [...scopeForm.model_set],
-    description: scopeForm.description.trim()
+  const payload: UpsertAccountRuleBindingRequest = {
+    platform: bindingForm.platform.trim(),
+    business_type: bindingForm.business_type.trim(),
+    enabled: bindingForm.enabled,
+    model_collection_id: parseOptionalId(bindingForm.model_collection_id),
+    error_collection_id: parseOptionalId(bindingForm.error_collection_id),
+    description: bindingForm.description.trim()
   }
 
-  savingScope.value = true
+  savingBinding.value = true
   try {
-    const scope = editingScopeId.value
-      ? await accountRulesAPI.updateScope(editingScopeId.value, payload)
-      : await accountRulesAPI.createScope(payload)
+    const binding = editingBindingId.value
+      ? await accountRulesAPI.updateBinding(editingBindingId.value, payload)
+      : await accountRulesAPI.createBinding(payload)
 
-    await loadCatalog(scope.id)
-    appStore.showSuccess(editingScopeId.value ? '作用域已更新' : '作用域已创建')
+    await loadCatalog({
+      bindingId: binding.id,
+      modelCollectionId: binding.model_collection_id ?? null,
+      errorCollectionId: binding.error_collection_id ?? null
+    })
+    appStore.showSuccess(editingBindingId.value ? '绑定已更新' : '绑定已创建')
     emit('updated')
-    closeScopeEditor()
+    closeBindingEditor()
 
-    if (pendingDraft.value && scopeKey(scope) === scopeKey(pendingDraft.value)) {
-      openCreateRule(pendingDraft.value.rule, scope.id)
+    if (
+      pendingDraft.value &&
+      bindingKey(binding) === draftTargetKey(pendingDraft.value) &&
+      binding.error_collection_id
+    ) {
+      openCreateRule(pendingDraft.value.rule, binding.error_collection_id)
       pendingDraft.value = null
     }
   } catch (error: any) {
-    console.error('[AccountRuleManagerModal] Failed to save scope', error)
-    appStore.showError(error?.response?.data?.message || error?.response?.data?.detail || '保存作用域失败')
+    console.error('[AccountRuleManagerModal] Failed to save binding', error)
+    appStore.showError(error?.response?.data?.message || error?.response?.data?.detail || '保存绑定失败')
   } finally {
-    savingScope.value = false
+    savingBinding.value = false
   }
 }
 
-async function removeScope(scope: AccountRuleScope) {
-  if (!window.confirm(`确定删除作用域 ${formatPlatformLabel(scope.platform)} / ${formatScopeTypeLabel(scope.platform, scope.account_type)} 吗？`)) {
+async function removeBinding(binding: AccountRuleBinding) {
+  if (!window.confirm(`确定删除绑定 ${formatPlatformLabel(binding.platform)} / ${formatBusinessTypeLabel(binding.business_type)} 吗？`)) {
     return
   }
 
   try {
-    await accountRulesAPI.deleteScope(scope.id)
+    await accountRulesAPI.deleteBinding(binding.id)
     await loadCatalog()
-    appStore.showSuccess('作用域已删除')
+    appStore.showSuccess('绑定已删除')
     emit('updated')
   } catch (error: any) {
-    console.error('[AccountRuleManagerModal] Failed to delete scope', error)
-    appStore.showError(error?.response?.data?.message || error?.response?.data?.detail || '删除作用域失败')
+    console.error('[AccountRuleManagerModal] Failed to delete binding', error)
+    appStore.showError(error?.response?.data?.message || error?.response?.data?.detail || '删除绑定失败')
   }
 }
 
-function openCreateRule(prefill?: Partial<AccountRuleErrorRule> | null, scopeId?: number | null) {
+function openCreateModelCollection(assignToBinding = false) {
+  autoAssignModelCollectionToBinding.value = assignToBinding
+  editingModelCollectionId.value = null
+  resetModelCollectionForm()
+  showModelCollectionEditor.value = true
+}
+
+function openEditModelCollection(collection: AccountRuleModelCollection) {
+  editingModelCollectionId.value = collection.id
+  modelCollectionForm.name = collection.name
+  modelCollectionForm.models = [...(collection.models || [])]
+  modelCollectionForm.description = collection.description || ''
+  showModelCollectionEditor.value = true
+}
+
+function closeModelCollectionEditor() {
+  showModelCollectionEditor.value = false
+  editingModelCollectionId.value = null
+  autoAssignModelCollectionToBinding.value = false
+  resetModelCollectionForm()
+}
+
+async function saveModelCollection() {
+  if (!modelCollectionForm.name.trim()) {
+    appStore.showError('模型集合名称不能为空')
+    return
+  }
+
+  const payload: UpsertAccountRuleModelCollectionRequest = {
+    name: modelCollectionForm.name.trim(),
+    models: [...modelCollectionForm.models],
+    description: modelCollectionForm.description.trim()
+  }
+
+  savingModelCollection.value = true
+  try {
+    const collection = editingModelCollectionId.value
+      ? await accountRulesAPI.updateModelCollection(editingModelCollectionId.value, payload)
+      : await accountRulesAPI.createModelCollection(payload)
+
+    await loadCatalog({
+      modelCollectionId: collection.id,
+      bindingId: selectedBindingId.value,
+      errorCollectionId: selectedErrorCollectionId.value
+    })
+    if (autoAssignModelCollectionToBinding.value) {
+      bindingForm.model_collection_id = String(collection.id)
+    }
+    appStore.showSuccess(editingModelCollectionId.value ? '模型集合已更新' : '模型集合已创建')
+    emit('updated')
+    closeModelCollectionEditor()
+  } catch (error: any) {
+    console.error('[AccountRuleManagerModal] Failed to save model collection', error)
+    appStore.showError(error?.response?.data?.message || error?.response?.data?.detail || '保存模型集合失败')
+  } finally {
+    savingModelCollection.value = false
+  }
+}
+
+async function removeModelCollection(collection: AccountRuleModelCollection) {
+  if (!window.confirm(`确定删除模型集合「${collection.name}」吗？绑定到它的关系会失去模型集合配置。`)) {
+    return
+  }
+
+  try {
+    await accountRulesAPI.deleteModelCollection(collection.id)
+    await loadCatalog({
+      bindingId: selectedBindingId.value,
+      errorCollectionId: selectedErrorCollectionId.value
+    })
+    appStore.showSuccess('模型集合已删除')
+    emit('updated')
+  } catch (error: any) {
+    console.error('[AccountRuleManagerModal] Failed to delete model collection', error)
+    appStore.showError(error?.response?.data?.message || error?.response?.data?.detail || '删除模型集合失败')
+  }
+}
+
+function openCreateErrorCollection(assignToBinding = false) {
+  autoAssignErrorCollectionToBinding.value = assignToBinding
+  editingErrorCollectionId.value = null
+  resetErrorCollectionForm()
+  showErrorCollectionEditor.value = true
+}
+
+function openEditErrorCollection(collection: AccountRuleErrorCollection) {
+  editingErrorCollectionId.value = collection.id
+  errorCollectionForm.name = collection.name
+  errorCollectionForm.description = collection.description || ''
+  showErrorCollectionEditor.value = true
+}
+
+function closeErrorCollectionEditor() {
+  showErrorCollectionEditor.value = false
+  editingErrorCollectionId.value = null
+  autoAssignErrorCollectionToBinding.value = false
+  resetErrorCollectionForm()
+}
+
+async function saveErrorCollection() {
+  if (!errorCollectionForm.name.trim()) {
+    appStore.showError('错误集合名称不能为空')
+    return
+  }
+
+  const payload: UpsertAccountRuleErrorCollectionRequest = {
+    name: errorCollectionForm.name.trim(),
+    description: errorCollectionForm.description.trim()
+  }
+
+  savingErrorCollection.value = true
+  try {
+    const collection = editingErrorCollectionId.value
+      ? await accountRulesAPI.updateErrorCollection(editingErrorCollectionId.value, payload)
+      : await accountRulesAPI.createErrorCollection(payload)
+
+    await loadCatalog({
+      errorCollectionId: collection.id,
+      bindingId: selectedBindingId.value,
+      modelCollectionId: selectedModelCollectionId.value
+    })
+    if (autoAssignErrorCollectionToBinding.value) {
+      bindingForm.error_collection_id = String(collection.id)
+    }
+    appStore.showSuccess(editingErrorCollectionId.value ? '错误集合已更新' : '错误集合已创建')
+    emit('updated')
+    closeErrorCollectionEditor()
+  } catch (error: any) {
+    console.error('[AccountRuleManagerModal] Failed to save error collection', error)
+    appStore.showError(error?.response?.data?.message || error?.response?.data?.detail || '保存错误集合失败')
+  } finally {
+    savingErrorCollection.value = false
+  }
+}
+
+async function removeErrorCollection(collection: AccountRuleErrorCollection) {
+  if (!window.confirm(`确定删除错误集合「${collection.name}」吗？绑定到它的关系会失去错误规则配置。`)) {
+    return
+  }
+
+  try {
+    await accountRulesAPI.deleteErrorCollection(collection.id)
+    await loadCatalog({
+      bindingId: selectedBindingId.value,
+      modelCollectionId: selectedModelCollectionId.value
+    })
+    appStore.showSuccess('错误集合已删除')
+    emit('updated')
+  } catch (error: any) {
+    console.error('[AccountRuleManagerModal] Failed to delete error collection', error)
+    appStore.showError(error?.response?.data?.message || error?.response?.data?.detail || '删除错误集合失败')
+  }
+}
+
+function openCreateRule(prefill?: Partial<AccountRuleErrorRule> | null, errorCollectionId?: number | null) {
+  const resolvedCollectionId = errorCollectionId ?? selectedErrorCollectionId.value
+  if (!resolvedCollectionId) {
+    appStore.showError('请先选择一个错误集合')
+    return
+  }
   editingRuleId.value = null
-  editingRuleScopeId.value = scopeId ?? selectedScopeId.value
+  editingRuleCollectionId.value = resolvedCollectionId
+  selectedErrorCollectionId.value = resolvedCollectionId
   resetRuleForm()
   if (prefill) {
     ruleForm.name = prefill.name || ''
@@ -945,15 +1439,14 @@ function openCreateRule(prefill?: Partial<AccountRuleErrorRule> | null, scopeId?
 
 function openEditRule(rule: AccountRuleErrorRule) {
   editingRuleId.value = rule.id
-  editingRuleScopeId.value = rule.scope_id
-  openCreateRule(rule, rule.scope_id)
+  openCreateRule(rule, rule.error_collection_id)
   editingRuleId.value = rule.id
 }
 
 function closeRuleEditor() {
   showRuleEditor.value = false
   editingRuleId.value = null
-  editingRuleScopeId.value = null
+  editingRuleCollectionId.value = null
   resetRuleForm()
 }
 
@@ -980,8 +1473,8 @@ function parseKeywords(input: string): string[] {
 }
 
 async function saveRule() {
-  if (!editingRuleScopeId.value) {
-    appStore.showError('请先选择一个作用域')
+  if (!editingRuleCollectionId.value) {
+    appStore.showError('请先选择一个错误集合')
     return
   }
   if (!ruleForm.name.trim()) {
@@ -1033,9 +1526,13 @@ async function saveRule() {
     if (editingRuleId.value) {
       await accountRulesAPI.updateRule(editingRuleId.value, payload)
     } else {
-      await accountRulesAPI.createRule(editingRuleScopeId.value, payload)
+      await accountRulesAPI.createRule(editingRuleCollectionId.value, payload)
     }
-    await loadCatalog(editingRuleScopeId.value)
+    await loadCatalog({
+      errorCollectionId: editingRuleCollectionId.value,
+      bindingId: selectedBindingId.value,
+      modelCollectionId: selectedModelCollectionId.value
+    })
     appStore.showSuccess(editingRuleId.value ? '规则已更新' : '规则已创建')
     emit('updated')
     closeRuleEditor()
@@ -1054,7 +1551,11 @@ async function removeRule(rule: AccountRuleErrorRule) {
 
   try {
     await accountRulesAPI.deleteRule(rule.id)
-    await loadCatalog(rule.scope_id)
+    await loadCatalog({
+      errorCollectionId: rule.error_collection_id,
+      bindingId: selectedBindingId.value,
+      modelCollectionId: selectedModelCollectionId.value
+    })
     appStore.showSuccess('规则已删除')
     emit('updated')
   } catch (error: any) {
@@ -1074,26 +1575,38 @@ function formatRuleActions(rule: AccountRuleErrorRule): string[] {
 
 watch(
   () => props.show,
-  async (show) => {
+  async show => {
     if (!show) {
-      showScopeEditor.value = false
+      showBindingEditor.value = false
+      showModelCollectionEditor.value = false
+      showErrorCollectionEditor.value = false
       showRuleEditor.value = false
-      editingScopeId.value = null
+      editingBindingId.value = null
+      editingModelCollectionId.value = null
+      editingErrorCollectionId.value = null
       editingRuleId.value = null
-      editingRuleScopeId.value = null
-      resetScopeForm()
+      editingRuleCollectionId.value = null
+      resetBindingForm()
+      resetModelCollectionForm()
+      resetErrorCollectionForm()
       resetRuleForm()
+      appliedDraftKey.value = ''
+      pendingDraft.value = null
       return
     }
-    await loadCatalog(selectedScopeId.value)
+    await loadCatalog({
+      bindingId: selectedBindingId.value,
+      modelCollectionId: selectedModelCollectionId.value,
+      errorCollectionId: selectedErrorCollectionId.value
+    })
   },
   { immediate: true }
 )
 
 watch(
-  () => catalog.value?.scopes,
+  () => [catalog.value?.bindings, catalog.value?.model_collections, catalog.value?.error_collections],
   () => {
-    syncSelection()
+    syncSelections()
   }
 )
 

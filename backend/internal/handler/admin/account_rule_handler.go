@@ -28,12 +28,24 @@ func NewAccountRuleHandler(
 	}
 }
 
-type upsertAccountRuleScopeRequest struct {
-	Platform    string   `json:"platform"`
-	AccountType string   `json:"account_type"`
-	Enabled     *bool    `json:"enabled"`
-	ModelSet    []string `json:"model_set"`
+type upsertAccountRuleBindingRequest struct {
+	Platform          string `json:"platform"`
+	BusinessType      string `json:"business_type"`
+	Enabled           *bool  `json:"enabled"`
+	ModelCollectionID *int64 `json:"model_collection_id"`
+	ErrorCollectionID *int64 `json:"error_collection_id"`
+	Description       string `json:"description"`
+}
+
+type upsertAccountRuleModelCollectionRequest struct {
+	Name        string   `json:"name"`
+	Models      []string `json:"models"`
 	Description string   `json:"description"`
+}
+
+type upsertAccountRuleErrorCollectionRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type updateAccountRuleSettingsRequest struct {
@@ -69,25 +81,26 @@ func (h *AccountRuleHandler) GetCatalog(c *gin.Context) {
 	response.Success(c, catalog)
 }
 
-func (h *AccountRuleHandler) CreateScope(c *gin.Context) {
-	var req upsertAccountRuleScopeRequest
+func (h *AccountRuleHandler) CreateBinding(c *gin.Context) {
+	var req upsertAccountRuleBindingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
-	scope := &service.AccountRuleScope{
-		Platform:    req.Platform,
-		AccountType: req.AccountType,
-		Enabled:     true,
-		ModelSet:    req.ModelSet,
-		Description: req.Description,
+	binding := &service.AccountRuleBinding{
+		Platform:          req.Platform,
+		BusinessType:      req.BusinessType,
+		Enabled:           true,
+		ModelCollectionID: req.ModelCollectionID,
+		ErrorCollectionID: req.ErrorCollectionID,
+		Description:       req.Description,
 	}
 	if req.Enabled != nil {
-		scope.Enabled = *req.Enabled
+		binding.Enabled = *req.Enabled
 	}
 
-	created, err := h.accountRuleService.CreateScope(c.Request.Context(), scope)
+	created, err := h.accountRuleService.CreateBinding(c.Request.Context(), binding)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -95,70 +108,223 @@ func (h *AccountRuleHandler) CreateScope(c *gin.Context) {
 	response.Success(c, created)
 }
 
-func (h *AccountRuleHandler) UpdateScope(c *gin.Context) {
+func (h *AccountRuleHandler) UpdateBinding(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
-		response.BadRequest(c, "Invalid scope id")
+		response.BadRequest(c, "Invalid binding id")
 		return
 	}
 
-	var req upsertAccountRuleScopeRequest
+	var req upsertAccountRuleBindingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
-	existing, err := h.accountRuleService.GetScopeByID(c.Request.Context(), id)
+	existing, err := h.accountRuleService.GetBindingByID(c.Request.Context(), id)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	if existing == nil {
-		response.NotFound(c, "Scope not found")
+		response.NotFound(c, "Binding not found")
 		return
 	}
 
-	scope := &service.AccountRuleScope{
-		ID:          existing.ID,
-		Platform:    existing.Platform,
-		AccountType: existing.AccountType,
-		Enabled:     existing.Enabled,
-		ModelSet:    req.ModelSet,
-		Description: req.Description,
+	binding := &service.AccountRuleBinding{
+		ID:                existing.ID,
+		Platform:          existing.Platform,
+		BusinessType:      existing.BusinessType,
+		Enabled:           existing.Enabled,
+		ModelCollectionID: req.ModelCollectionID,
+		ErrorCollectionID: req.ErrorCollectionID,
+		Description:       req.Description,
 	}
 	if req.Enabled != nil {
-		scope.Enabled = *req.Enabled
+		binding.Enabled = *req.Enabled
 	}
 	if strings.TrimSpace(req.Platform) != "" {
-		scope.Platform = req.Platform
+		binding.Platform = req.Platform
 	}
-	scope.AccountType = req.AccountType
-	if req.ModelSet == nil {
-		scope.ModelSet = existing.ModelSet
-	}
-	if strings.TrimSpace(req.Description) == "" {
-		scope.Description = existing.Description
-	}
+	binding.BusinessType = req.BusinessType
 
-	updated, updateErr := h.accountRuleService.UpdateScope(c.Request.Context(), scope)
+	updated, updateErr := h.accountRuleService.UpdateBinding(c.Request.Context(), binding)
 	if updateErr != nil {
 		response.BadRequest(c, updateErr.Error())
 		return
 	}
 	if updated == nil {
-		response.NotFound(c, "Scope not found")
+		response.NotFound(c, "Binding not found")
 		return
 	}
 	response.Success(c, updated)
 }
 
-func (h *AccountRuleHandler) DeleteScope(c *gin.Context) {
+func (h *AccountRuleHandler) DeleteBinding(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
-		response.BadRequest(c, "Invalid scope id")
+		response.BadRequest(c, "Invalid binding id")
 		return
 	}
-	if err := h.accountRuleService.DeleteScope(c.Request.Context(), id); err != nil {
+	if err := h.accountRuleService.DeleteBinding(c.Request.Context(), id); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"message": "ok"})
+}
+
+func (h *AccountRuleHandler) CreateModelCollection(c *gin.Context) {
+	var req upsertAccountRuleModelCollectionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	collection := &service.AccountRuleModelCollection{
+		Name:        req.Name,
+		Models:      req.Models,
+		Description: req.Description,
+	}
+	created, err := h.accountRuleService.CreateModelCollection(c.Request.Context(), collection)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, created)
+}
+
+func (h *AccountRuleHandler) UpdateModelCollection(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid model collection id")
+		return
+	}
+
+	var req upsertAccountRuleModelCollectionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	existing, err := h.accountRuleService.GetModelCollectionByID(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if existing == nil {
+		response.NotFound(c, "Model collection not found")
+		return
+	}
+
+	collection := &service.AccountRuleModelCollection{
+		ID:          existing.ID,
+		Name:        req.Name,
+		Models:      req.Models,
+		Description: req.Description,
+	}
+	if strings.TrimSpace(collection.Name) == "" {
+		collection.Name = existing.Name
+	}
+	if collection.Models == nil {
+		collection.Models = existing.Models
+	}
+
+	updated, updateErr := h.accountRuleService.UpdateModelCollection(c.Request.Context(), collection)
+	if updateErr != nil {
+		response.BadRequest(c, updateErr.Error())
+		return
+	}
+	if updated == nil {
+		response.NotFound(c, "Model collection not found")
+		return
+	}
+	response.Success(c, updated)
+}
+
+func (h *AccountRuleHandler) DeleteModelCollection(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid model collection id")
+		return
+	}
+	if err := h.accountRuleService.DeleteModelCollection(c.Request.Context(), id); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"message": "ok"})
+}
+
+func (h *AccountRuleHandler) CreateErrorCollection(c *gin.Context) {
+	var req upsertAccountRuleErrorCollectionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	collection := &service.AccountRuleErrorCollection{
+		Name:        req.Name,
+		Description: req.Description,
+	}
+	created, err := h.accountRuleService.CreateErrorCollection(c.Request.Context(), collection)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, created)
+}
+
+func (h *AccountRuleHandler) UpdateErrorCollection(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid error collection id")
+		return
+	}
+
+	var req upsertAccountRuleErrorCollectionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	existing, err := h.accountRuleService.GetErrorCollectionByID(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if existing == nil {
+		response.NotFound(c, "Error collection not found")
+		return
+	}
+
+	collection := &service.AccountRuleErrorCollection{
+		ID:          existing.ID,
+		Name:        req.Name,
+		Description: req.Description,
+		Rules:       existing.Rules,
+	}
+	if strings.TrimSpace(collection.Name) == "" {
+		collection.Name = existing.Name
+	}
+
+	updated, updateErr := h.accountRuleService.UpdateErrorCollection(c.Request.Context(), collection)
+	if updateErr != nil {
+		response.BadRequest(c, updateErr.Error())
+		return
+	}
+	if updated == nil {
+		response.NotFound(c, "Error collection not found")
+		return
+	}
+	response.Success(c, updated)
+}
+
+func (h *AccountRuleHandler) DeleteErrorCollection(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid error collection id")
+		return
+	}
+	if err := h.accountRuleService.DeleteErrorCollection(c.Request.Context(), id); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -166,9 +332,9 @@ func (h *AccountRuleHandler) DeleteScope(c *gin.Context) {
 }
 
 func (h *AccountRuleHandler) CreateRule(c *gin.Context) {
-	scopeID, err := strconv.ParseInt(c.Param("scopeId"), 10, 64)
-	if err != nil || scopeID <= 0 {
-		response.BadRequest(c, "Invalid scope id")
+	errorCollectionID, err := strconv.ParseInt(c.Param("collectionId"), 10, 64)
+	if err != nil || errorCollectionID <= 0 {
+		response.BadRequest(c, "Invalid error collection id")
 		return
 	}
 
@@ -178,7 +344,7 @@ func (h *AccountRuleHandler) CreateRule(c *gin.Context) {
 		return
 	}
 
-	rule := buildAccountRuleFromRequest(scopeID, req)
+	rule := buildAccountRuleFromRequest(errorCollectionID, req)
 	created, createErr := h.accountRuleService.CreateRule(c.Request.Context(), rule)
 	if createErr != nil {
 		response.BadRequest(c, createErr.Error())
@@ -210,9 +376,9 @@ func (h *AccountRuleHandler) UpdateRule(c *gin.Context) {
 		return
 	}
 
-	rule := buildAccountRuleFromRequest(existing.ScopeID, req)
+	rule := buildAccountRuleFromRequest(existing.ErrorCollectionID, req)
 	rule.ID = existing.ID
-	rule.ScopeID = existing.ScopeID
+	rule.ErrorCollectionID = existing.ErrorCollectionID
 	if req.Name == "" {
 		rule.Name = existing.Name
 	}
@@ -246,13 +412,17 @@ func (h *AccountRuleHandler) UpdateRule(c *gin.Context) {
 	if req.PassthroughCode == nil {
 		rule.PassthroughCode = existing.PassthroughCode
 	}
-	if req.ResponseCode == nil {
+	if req.PassthroughCode != nil && *req.PassthroughCode {
+		rule.ResponseCode = nil
+	} else if req.ResponseCode == nil {
 		rule.ResponseCode = existing.ResponseCode
 	}
 	if req.PassthroughBody == nil {
 		rule.PassthroughBody = existing.PassthroughBody
 	}
-	if req.CustomMessage == nil {
+	if req.PassthroughBody != nil && *req.PassthroughBody {
+		rule.CustomMessage = nil
+	} else if req.CustomMessage == nil {
 		rule.CustomMessage = existing.CustomMessage
 	}
 	if req.SkipMonitoring == nil {
@@ -345,22 +515,22 @@ func (h *AccountRuleHandler) GetOpsDraft(c *gin.Context) {
 	response.Success(c, draft)
 }
 
-func buildAccountRuleFromRequest(scopeID int64, req upsertAccountRuleRequest) *service.AccountRuleErrorRule {
+func buildAccountRuleFromRequest(errorCollectionID int64, req upsertAccountRuleRequest) *service.AccountRuleErrorRule {
 	rule := &service.AccountRuleErrorRule{
-		ScopeID:         scopeID,
-		Name:            req.Name,
-		Enabled:         true,
-		Priority:        100,
-		StatusCodes:     req.StatusCodes,
-		Keywords:        req.Keywords,
-		MatchMode:       req.MatchMode,
-		ActionFailover:  true,
-		PassthroughCode: true,
-		PassthroughBody: true,
-		Description:     req.Description,
-		SampleResponse:  req.SampleResponse,
-		ResponseCode:    req.ResponseCode,
-		CustomMessage:   req.CustomMessage,
+		ErrorCollectionID: errorCollectionID,
+		Name:              req.Name,
+		Enabled:           true,
+		Priority:          100,
+		StatusCodes:       req.StatusCodes,
+		Keywords:          req.Keywords,
+		MatchMode:         req.MatchMode,
+		ActionFailover:    true,
+		PassthroughCode:   true,
+		PassthroughBody:   true,
+		Description:       req.Description,
+		SampleResponse:    req.SampleResponse,
+		ResponseCode:      req.ResponseCode,
+		CustomMessage:     req.CustomMessage,
 	}
 	if req.Enabled != nil {
 		rule.Enabled = *req.Enabled
@@ -398,8 +568,9 @@ func (h *AccountRuleHandler) buildDraftFromOpsDetail(c *gin.Context, detail *ser
 	}
 
 	platform := strings.TrimSpace(detail.Platform)
-	accountType := ""
-	var matchedScopeID *int64
+	businessType := ""
+	var matchedBindingID *int64
+	var matchedErrorCollectionID *int64
 	var accountID *int64
 	accountName := strings.TrimSpace(detail.AccountName)
 
@@ -409,7 +580,7 @@ func (h *AccountRuleHandler) buildDraftFromOpsDetail(c *gin.Context, detail *ser
 			account, err := h.accountRepo.GetByID(c.Request.Context(), *detail.AccountID)
 			if err == nil && account != nil {
 				platform = account.Platform
-				accountType = account.AccountRuleScopeType()
+				businessType = account.AccountRuleScopeType()
 				if strings.TrimSpace(accountName) == "" {
 					accountName = account.Name
 				}
@@ -418,14 +589,11 @@ func (h *AccountRuleHandler) buildDraftFromOpsDetail(c *gin.Context, detail *ser
 	}
 
 	if h.accountRuleService != nil {
-		scopeID, err := h.accountRuleService.FindScopeIDByKey(c.Request.Context(), platform, accountType)
-		if err == nil && scopeID != nil {
-			matchedScopeID = scopeID
-		} else if err == nil {
-			scopeID, fallbackErr := h.accountRuleService.FindScopeIDByKey(c.Request.Context(), platform, "")
-			if fallbackErr == nil && scopeID != nil {
-				matchedScopeID = scopeID
-			}
+		binding, err := h.accountRuleService.FindEffectiveBinding(c.Request.Context(), platform, businessType)
+		if err == nil && binding != nil {
+			id := binding.ID
+			matchedBindingID = &id
+			matchedErrorCollectionID = binding.ErrorCollectionID
 		}
 	}
 
@@ -451,19 +619,20 @@ func (h *AccountRuleHandler) buildDraftFromOpsDetail(c *gin.Context, detail *ser
 	}
 
 	ruleName := fmt.Sprintf("%s %d", strings.ToUpper(platform), statusCode)
-	if accountType != "" {
-		ruleName = fmt.Sprintf("%s %d (%s)", strings.ToUpper(platform), statusCode, accountType)
+	if businessType != "" {
+		ruleName = fmt.Sprintf("%s %d (%s)", strings.ToUpper(platform), statusCode, businessType)
 	}
 	if source == "request-error" {
 		ruleName = ruleName + " request"
 	}
 
 	return &service.AccountRuleDraft{
-		Platform:       platform,
-		AccountType:    accountType,
-		MatchedScopeID: matchedScopeID,
-		AccountID:      accountID,
-		AccountName:    accountName,
+		Platform:                 platform,
+		BusinessType:             businessType,
+		MatchedBindingID:         matchedBindingID,
+		MatchedErrorCollectionID: matchedErrorCollectionID,
+		AccountID:                accountID,
+		AccountName:              accountName,
 		Rule: &service.AccountRuleErrorRule{
 			Name:            ruleName,
 			Enabled:         true,

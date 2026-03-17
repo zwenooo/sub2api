@@ -13,22 +13,34 @@ import (
 )
 
 type AccountRuleRepository interface {
-	ListScopes(ctx context.Context) ([]*AccountRuleScope, error)
-	GetScopeByID(ctx context.Context, id int64) (*AccountRuleScope, error)
-	CreateScope(ctx context.Context, scope *AccountRuleScope) (*AccountRuleScope, error)
-	UpdateScope(ctx context.Context, scope *AccountRuleScope) (*AccountRuleScope, error)
-	DeleteScope(ctx context.Context, id int64) error
+	ListBindings(ctx context.Context) ([]*AccountRuleBinding, error)
+	GetBindingByID(ctx context.Context, id int64) (*AccountRuleBinding, error)
+	CreateBinding(ctx context.Context, binding *AccountRuleBinding) (*AccountRuleBinding, error)
+	UpdateBinding(ctx context.Context, binding *AccountRuleBinding) (*AccountRuleBinding, error)
+	DeleteBinding(ctx context.Context, id int64) error
+
+	ListModelCollections(ctx context.Context) ([]*AccountRuleModelCollection, error)
+	GetModelCollectionByID(ctx context.Context, id int64) (*AccountRuleModelCollection, error)
+	CreateModelCollection(ctx context.Context, collection *AccountRuleModelCollection) (*AccountRuleModelCollection, error)
+	UpdateModelCollection(ctx context.Context, collection *AccountRuleModelCollection) (*AccountRuleModelCollection, error)
+	DeleteModelCollection(ctx context.Context, id int64) error
+
+	ListErrorCollections(ctx context.Context) ([]*AccountRuleErrorCollection, error)
+	GetErrorCollectionByID(ctx context.Context, id int64) (*AccountRuleErrorCollection, error)
+	CreateErrorCollection(ctx context.Context, collection *AccountRuleErrorCollection) (*AccountRuleErrorCollection, error)
+	UpdateErrorCollection(ctx context.Context, collection *AccountRuleErrorCollection) (*AccountRuleErrorCollection, error)
+	DeleteErrorCollection(ctx context.Context, id int64) error
 
 	GetRuleByID(ctx context.Context, id int64) (*AccountRuleErrorRule, error)
 	CreateRule(ctx context.Context, rule *AccountRuleErrorRule) (*AccountRuleErrorRule, error)
 	UpdateRule(ctx context.Context, rule *AccountRuleErrorRule) (*AccountRuleErrorRule, error)
 	DeleteRule(ctx context.Context, id int64) error
 
-	ListObservedScopes(ctx context.Context) ([]*AccountRuleObservedScope, error)
+	ListObservedBindings(ctx context.Context) ([]*AccountRuleObservedBinding, error)
 }
 
-type cachedAccountRuleScope struct {
-	scope    *AccountRuleScope
+type cachedAccountRuleBinding struct {
+	binding  *AccountRuleBinding
 	modelSet []string
 	rules    []*cachedAccountRule
 }
@@ -40,8 +52,8 @@ type cachedAccountRule struct {
 }
 
 type accountRuleCacheSnapshot struct {
-	loadedAt    time.Time
-	scopesByKey map[string]*cachedAccountRuleScope
+	loadedAt      time.Time
+	bindingsByKey map[string]*cachedAccountRuleBinding
 }
 
 const accountRuleCacheTTL = 30 * time.Second
@@ -72,11 +84,19 @@ func NewAccountRuleService(
 }
 
 func (s *AccountRuleService) ListCatalog(ctx context.Context) (*AccountRuleCatalog, error) {
-	scopes, err := s.repo.ListScopes(ctx)
+	bindings, err := s.repo.ListBindings(ctx)
 	if err != nil {
 		return nil, err
 	}
-	observed, err := s.repo.ListObservedScopes(ctx)
+	modelCollections, err := s.repo.ListModelCollections(ctx)
+	if err != nil {
+		return nil, err
+	}
+	errorCollections, err := s.repo.ListErrorCollections(ctx)
+	if err != nil {
+		return nil, err
+	}
+	observed, err := s.repo.ListObservedBindings(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -85,30 +105,38 @@ func (s *AccountRuleService) ListCatalog(ctx context.Context) (*AccountRuleCatal
 		return nil, err
 	}
 
-	for _, scope := range scopes {
-		scope.Normalize()
-		for _, rule := range scope.Rules {
+	for _, binding := range bindings {
+		binding.Normalize()
+	}
+	for _, collection := range modelCollections {
+		collection.Normalize()
+	}
+	for _, collection := range errorCollections {
+		collection.Normalize()
+		for _, rule := range collection.Rules {
 			rule.Normalize()
 		}
 	}
 
 	return &AccountRuleCatalog{
-		Scopes:         scopes,
-		ObservedScopes: synthesizePlatformObservedScopes(observed),
-		Settings:       *settings,
+		Bindings:         bindings,
+		ModelCollections: modelCollections,
+		ErrorCollections: errorCollections,
+		ObservedBindings: synthesizePlatformObservedBindings(observed),
+		Settings:         *settings,
 	}, nil
 }
 
-func synthesizePlatformObservedScopes(observed []*AccountRuleObservedScope) []*AccountRuleObservedScope {
+func synthesizePlatformObservedBindings(observed []*AccountRuleObservedBinding) []*AccountRuleObservedBinding {
 	if len(observed) == 0 {
-		return []*AccountRuleObservedScope{}
+		return []*AccountRuleObservedBinding{}
 	}
 	type key struct {
-		platform string
-		scopeTyp string
+		platform     string
+		businessType string
 	}
-	items := make([]*AccountRuleObservedScope, 0, len(observed)*2)
-	itemByKey := make(map[key]*AccountRuleObservedScope, len(observed)*2)
+	items := make([]*AccountRuleObservedBinding, 0, len(observed)*2)
+	itemByKey := make(map[key]*AccountRuleObservedBinding, len(observed)*2)
 	platformCounts := make(map[string]int64)
 
 	for _, item := range observed {
@@ -116,19 +144,19 @@ func synthesizePlatformObservedScopes(observed []*AccountRuleObservedScope) []*A
 			continue
 		}
 		item.Platform = normalizeAccountRulePlatform(item.Platform)
-		item.AccountType = normalizeAccountRuleType(item.AccountType)
+		item.BusinessType = normalizeAccountRuleType(item.BusinessType)
 		if item.Platform == "" {
 			continue
 		}
 		platformCounts[item.Platform] += item.AccountCount
-		k := key{platform: item.Platform, scopeTyp: item.AccountType}
+		k := key{platform: item.Platform, businessType: item.BusinessType}
 		if existing, exists := itemByKey[k]; exists {
 			existing.AccountCount += item.AccountCount
 			continue
 		}
-		copied := &AccountRuleObservedScope{
+		copied := &AccountRuleObservedBinding{
 			Platform:     item.Platform,
-			AccountType:  item.AccountType,
+			BusinessType: item.BusinessType,
 			AccountCount: item.AccountCount,
 		}
 		itemByKey[k] = copied
@@ -136,60 +164,57 @@ func synthesizePlatformObservedScopes(observed []*AccountRuleObservedScope) []*A
 	}
 
 	for platform, count := range platformCounts {
-		k := key{platform: platform, scopeTyp: ""}
+		k := key{platform: platform, businessType: ""}
 		if existing, exists := itemByKey[k]; exists {
 			existing.AccountCount = count
 			continue
 		}
-		copied := &AccountRuleObservedScope{
+		copied := &AccountRuleObservedBinding{
 			Platform:     platform,
-			AccountType:  "",
+			BusinessType: "",
 			AccountCount: count,
 		}
 		itemByKey[k] = copied
 		items = append(items, copied)
 	}
 
-	sortObservedScopes(items)
+	sortObservedBindings(items)
 	return items
 }
 
-func sortObservedScopes(items []*AccountRuleObservedScope) {
+func sortObservedBindings(items []*AccountRuleObservedBinding) {
 	sort.Slice(items, func(i, j int) bool {
 		a := items[i]
 		b := items[j]
 		if a.Platform != b.Platform {
 			return a.Platform < b.Platform
 		}
-		if a.AccountType == "" && b.AccountType != "" {
+		if a.BusinessType == "" && b.BusinessType != "" {
 			return true
 		}
-		if a.AccountType != "" && b.AccountType == "" {
+		if a.BusinessType != "" && b.BusinessType == "" {
 			return false
 		}
-		return a.AccountType < b.AccountType
+		return a.BusinessType < b.BusinessType
 	})
 }
 
-func (s *AccountRuleService) GetScopeByID(ctx context.Context, id int64) (*AccountRuleScope, error) {
-	scope, err := s.repo.GetScopeByID(ctx, id)
+func (s *AccountRuleService) GetBindingByID(ctx context.Context, id int64) (*AccountRuleBinding, error) {
+	binding, err := s.repo.GetBindingByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if scope != nil {
-		scope.Normalize()
-		for _, rule := range scope.Rules {
-			rule.Normalize()
-		}
+	if binding != nil {
+		binding.Normalize()
 	}
-	return scope, nil
+	return binding, nil
 }
 
-func (s *AccountRuleService) CreateScope(ctx context.Context, scope *AccountRuleScope) (*AccountRuleScope, error) {
-	if err := scope.Validate(); err != nil {
+func (s *AccountRuleService) CreateBinding(ctx context.Context, binding *AccountRuleBinding) (*AccountRuleBinding, error) {
+	if err := binding.Validate(); err != nil {
 		return nil, err
 	}
-	created, err := s.repo.CreateScope(ctx, scope)
+	created, err := s.repo.CreateBinding(ctx, binding)
 	if err != nil {
 		return nil, err
 	}
@@ -197,14 +222,14 @@ func (s *AccountRuleService) CreateScope(ctx context.Context, scope *AccountRule
 	return created, nil
 }
 
-func (s *AccountRuleService) UpdateScope(ctx context.Context, scope *AccountRuleScope) (*AccountRuleScope, error) {
-	if scope == nil || scope.ID <= 0 {
-		return nil, fmt.Errorf("scope id is required")
+func (s *AccountRuleService) UpdateBinding(ctx context.Context, binding *AccountRuleBinding) (*AccountRuleBinding, error) {
+	if binding == nil || binding.ID <= 0 {
+		return nil, fmt.Errorf("binding id is required")
 	}
-	if err := scope.Validate(); err != nil {
+	if err := binding.Validate(); err != nil {
 		return nil, err
 	}
-	updated, err := s.repo.UpdateScope(ctx, scope)
+	updated, err := s.repo.UpdateBinding(ctx, binding)
 	if err != nil {
 		return nil, err
 	}
@@ -212,11 +237,112 @@ func (s *AccountRuleService) UpdateScope(ctx context.Context, scope *AccountRule
 	return updated, nil
 }
 
-func (s *AccountRuleService) DeleteScope(ctx context.Context, id int64) error {
+func (s *AccountRuleService) DeleteBinding(ctx context.Context, id int64) error {
 	if id <= 0 {
-		return fmt.Errorf("scope id is required")
+		return fmt.Errorf("binding id is required")
 	}
-	if err := s.repo.DeleteScope(ctx, id); err != nil {
+	if err := s.repo.DeleteBinding(ctx, id); err != nil {
+		return err
+	}
+	_ = s.refreshCache(context.Background())
+	return nil
+}
+
+func (s *AccountRuleService) GetModelCollectionByID(ctx context.Context, id int64) (*AccountRuleModelCollection, error) {
+	collection, err := s.repo.GetModelCollectionByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if collection != nil {
+		collection.Normalize()
+	}
+	return collection, nil
+}
+
+func (s *AccountRuleService) CreateModelCollection(ctx context.Context, collection *AccountRuleModelCollection) (*AccountRuleModelCollection, error) {
+	if err := collection.Validate(); err != nil {
+		return nil, err
+	}
+	created, err := s.repo.CreateModelCollection(ctx, collection)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.refreshCache(context.Background())
+	return created, nil
+}
+
+func (s *AccountRuleService) UpdateModelCollection(ctx context.Context, collection *AccountRuleModelCollection) (*AccountRuleModelCollection, error) {
+	if collection == nil || collection.ID <= 0 {
+		return nil, fmt.Errorf("model collection id is required")
+	}
+	if err := collection.Validate(); err != nil {
+		return nil, err
+	}
+	updated, err := s.repo.UpdateModelCollection(ctx, collection)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.refreshCache(context.Background())
+	return updated, nil
+}
+
+func (s *AccountRuleService) DeleteModelCollection(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("model collection id is required")
+	}
+	if err := s.repo.DeleteModelCollection(ctx, id); err != nil {
+		return err
+	}
+	_ = s.refreshCache(context.Background())
+	return nil
+}
+
+func (s *AccountRuleService) GetErrorCollectionByID(ctx context.Context, id int64) (*AccountRuleErrorCollection, error) {
+	collection, err := s.repo.GetErrorCollectionByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if collection != nil {
+		collection.Normalize()
+		for _, rule := range collection.Rules {
+			rule.Normalize()
+		}
+	}
+	return collection, nil
+}
+
+func (s *AccountRuleService) CreateErrorCollection(ctx context.Context, collection *AccountRuleErrorCollection) (*AccountRuleErrorCollection, error) {
+	if err := collection.Validate(); err != nil {
+		return nil, err
+	}
+	created, err := s.repo.CreateErrorCollection(ctx, collection)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.refreshCache(context.Background())
+	return created, nil
+}
+
+func (s *AccountRuleService) UpdateErrorCollection(ctx context.Context, collection *AccountRuleErrorCollection) (*AccountRuleErrorCollection, error) {
+	if collection == nil || collection.ID <= 0 {
+		return nil, fmt.Errorf("error collection id is required")
+	}
+	if err := collection.Validate(); err != nil {
+		return nil, err
+	}
+	updated, err := s.repo.UpdateErrorCollection(ctx, collection)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.refreshCache(context.Background())
+	return updated, nil
+}
+
+func (s *AccountRuleService) DeleteErrorCollection(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("error collection id is required")
+	}
+	if err := s.repo.DeleteErrorCollection(ctx, id); err != nil {
 		return err
 	}
 	_ = s.refreshCache(context.Background())
@@ -224,10 +350,10 @@ func (s *AccountRuleService) DeleteScope(ctx context.Context, id int64) error {
 }
 
 func (s *AccountRuleService) CreateRule(ctx context.Context, rule *AccountRuleErrorRule) (*AccountRuleErrorRule, error) {
-	if rule == nil || rule.ScopeID <= 0 {
-		return nil, fmt.Errorf("scope_id is required")
+	if rule == nil || rule.ErrorCollectionID <= 0 {
+		return nil, fmt.Errorf("error_collection_id is required")
 	}
-	if _, err := s.repo.GetScopeByID(ctx, rule.ScopeID); err != nil {
+	if _, err := s.repo.GetErrorCollectionByID(ctx, rule.ErrorCollectionID); err != nil {
 		return nil, err
 	}
 	if err := rule.Validate(); err != nil {
@@ -252,8 +378,8 @@ func (s *AccountRuleService) UpdateRule(ctx context.Context, rule *AccountRuleEr
 	if existing == nil {
 		return nil, fmt.Errorf("rule not found")
 	}
-	if rule.ScopeID == 0 {
-		rule.ScopeID = existing.ScopeID
+	if rule.ErrorCollectionID == 0 {
+		rule.ErrorCollectionID = existing.ErrorCollectionID
 	}
 	if err := rule.Validate(); err != nil {
 		return nil, err
@@ -329,36 +455,36 @@ func (s *AccountRuleService) MatchRuntimeRule(account *Account, statusCode int, 
 		return nil
 	}
 	snapshot := s.getCacheSnapshot(context.Background())
-	if snapshot == nil || len(snapshot.scopesByKey) == 0 {
+	if snapshot == nil || len(snapshot.bindingsByKey) == 0 {
 		return nil
 	}
 
 	platform := normalizeAccountRulePlatform(account.Platform)
-	accountType := account.AccountRuleScopeType()
+	businessType := account.AccountRuleScopeType()
 	if platform == "" {
 		return nil
 	}
 
-	keys := []string{accountRuleScopeKey(platform, accountType)}
-	if accountType != "" {
-		keys = append(keys, accountRuleScopeKey(platform, ""))
+	keys := []string{accountRuleBindingKey(platform, businessType)}
+	if businessType != "" {
+		keys = append(keys, accountRuleBindingKey(platform, ""))
 	}
 
 	bodyLower := ""
 	bodyLowerReady := false
 	for _, key := range keys {
-		scope := snapshot.scopesByKey[key]
-		if scope == nil || scope.scope == nil || !scope.scope.Enabled {
+		binding := snapshot.bindingsByKey[key]
+		if binding == nil || binding.binding == nil || !binding.binding.Enabled {
 			continue
 		}
-		for _, rule := range scope.rules {
+		for _, rule := range binding.rules {
 			if rule == nil || rule.rule == nil || !rule.rule.Enabled {
 				continue
 			}
 			if matchAccountRule(rule, statusCode, body, &bodyLower, &bodyLowerReady) {
 				return &AccountRuleMatch{
-					Scope: scope.scope,
-					Rule:  rule.rule,
+					Binding: binding.binding,
+					Rule:    rule.rule,
 				}
 			}
 		}
@@ -420,11 +546,11 @@ func (s *AccountRuleService) ApplyMatchedRule(ctx context.Context, account *Acco
 	if msg == "" {
 		msg = fmt.Sprintf("status=%d", statusCode)
 	}
-	scopeType := account.AccountRuleScopeType()
-	if scopeType == "" {
-		scopeType = "platform"
+	businessType := account.AccountRuleScopeType()
+	if businessType == "" {
+		businessType = "platform"
 	}
-	reason := fmt.Sprintf("account rule matched: %s (%s/%s): %s", match.Rule.Name, account.Platform, scopeType, msg)
+	reason := fmt.Sprintf("account rule matched: %s (%s/%s): %s", match.Rule.Name, account.Platform, businessType, msg)
 
 	if s.accountRepo == nil {
 		return result
@@ -451,18 +577,18 @@ func (s *AccountRuleService) ResolveScopedModelSet(account *Account) []string {
 		return nil
 	}
 	platform := normalizeAccountRulePlatform(account.Platform)
-	accountType := account.AccountRuleScopeType()
+	businessType := account.AccountRuleScopeType()
 	if platform == "" {
 		return nil
 	}
 
-	if accountType != "" {
-		if scope := snapshot.scopesByKey[accountRuleScopeKey(platform, accountType)]; scope != nil && scope.scope != nil && scope.scope.Enabled && len(scope.modelSet) > 0 {
-			return append([]string(nil), scope.modelSet...)
+	if businessType != "" {
+		if binding := snapshot.bindingsByKey[accountRuleBindingKey(platform, businessType)]; binding != nil && binding.binding != nil && binding.binding.Enabled && len(binding.modelSet) > 0 {
+			return append([]string(nil), binding.modelSet...)
 		}
 	}
-	if scope := snapshot.scopesByKey[accountRuleScopeKey(platform, "")]; scope != nil && scope.scope != nil && scope.scope.Enabled && len(scope.modelSet) > 0 {
-		return append([]string(nil), scope.modelSet...)
+	if binding := snapshot.bindingsByKey[accountRuleBindingKey(platform, "")]; binding != nil && binding.binding != nil && binding.binding.Enabled && len(binding.modelSet) > 0 {
+		return append([]string(nil), binding.modelSet...)
 	}
 	return nil
 }
@@ -519,23 +645,28 @@ func (s *AccountRuleService) CollectAvailableModels(accounts []Account) ([]strin
 	return out, true
 }
 
-func (s *AccountRuleService) FindScopeIDByKey(ctx context.Context, platform, accountType string) (*int64, error) {
-	scopes, err := s.repo.ListScopes(ctx)
-	if err != nil {
-		return nil, err
+func (s *AccountRuleService) FindBindingByKey(ctx context.Context, platform, businessType string) (*AccountRuleBinding, error) {
+	snapshot := s.getCacheSnapshot(ctx)
+	if snapshot == nil {
+		return nil, nil
 	}
-	platform = normalizeAccountRulePlatform(platform)
-	accountType = normalizeAccountRuleType(accountType)
-	for _, scope := range scopes {
-		if scope == nil {
-			continue
-		}
-		if normalizeAccountRulePlatform(scope.Platform) == platform && normalizeAccountRuleType(scope.AccountType) == accountType {
-			id := scope.ID
-			return &id, nil
-		}
+	binding := snapshot.bindingsByKey[accountRuleBindingKey(platform, businessType)]
+	if binding == nil || binding.binding == nil {
+		return nil, nil
 	}
-	return nil, nil
+	copied := *binding.binding
+	return &copied, nil
+}
+
+func (s *AccountRuleService) FindEffectiveBinding(ctx context.Context, platform, businessType string) (*AccountRuleBinding, error) {
+	binding, err := s.FindBindingByKey(ctx, platform, businessType)
+	if err != nil || binding != nil {
+		return binding, err
+	}
+	if normalizeAccountRuleType(businessType) == "" {
+		return nil, nil
+	}
+	return s.FindBindingByKey(ctx, platform, "")
 }
 
 func (s *AccountRuleService) getCacheSnapshot(ctx context.Context) *accountRuleCacheSnapshot {
@@ -557,23 +688,36 @@ func (s *AccountRuleService) refreshCache(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	scopes, err := s.repo.ListScopes(ctx)
+	bindings, err := s.repo.ListBindings(ctx)
+	if err != nil {
+		return err
+	}
+	modelCollections, err := s.repo.ListModelCollections(ctx)
+	if err != nil {
+		return err
+	}
+	errorCollections, err := s.repo.ListErrorCollections(ctx)
 	if err != nil {
 		return err
 	}
 
-	scopesByKey := make(map[string]*cachedAccountRuleScope, len(scopes))
-	for _, scope := range scopes {
-		if scope == nil {
+	modelsByCollectionID := make(map[int64][]string, len(modelCollections))
+	for _, collection := range modelCollections {
+		if collection == nil {
 			continue
 		}
-		scope.Normalize()
-		cachedScope := &cachedAccountRuleScope{
-			scope:    scope,
-			modelSet: append([]string(nil), scope.ModelSet...),
-			rules:    make([]*cachedAccountRule, 0, len(scope.Rules)),
+		collection.Normalize()
+		modelsByCollectionID[collection.ID] = append([]string(nil), collection.Models...)
+	}
+
+	rulesByCollectionID := make(map[int64][]*cachedAccountRule, len(errorCollections))
+	for _, collection := range errorCollections {
+		if collection == nil {
+			continue
 		}
-		for _, rule := range scope.Rules {
+		collection.Normalize()
+		cachedRules := make([]*cachedAccountRule, 0, len(collection.Rules))
+		for _, rule := range collection.Rules {
 			if rule == nil {
 				continue
 			}
@@ -589,20 +733,38 @@ func (s *AccountRuleService) refreshCache(ctx context.Context) error {
 			for _, keyword := range rule.Keywords {
 				cachedRule.lowerKeywords = append(cachedRule.lowerKeywords, strings.ToLower(keyword))
 			}
-			cachedScope.rules = append(cachedScope.rules, cachedRule)
+			cachedRules = append(cachedRules, cachedRule)
 		}
-		scopesByKey[accountRuleScopeKey(scope.Platform, scope.AccountType)] = cachedScope
+		rulesByCollectionID[collection.ID] = cachedRules
+	}
+
+	bindingsByKey := make(map[string]*cachedAccountRuleBinding, len(bindings))
+	for _, binding := range bindings {
+		if binding == nil {
+			continue
+		}
+		binding.Normalize()
+		cachedBinding := &cachedAccountRuleBinding{
+			binding: binding,
+		}
+		if binding.ModelCollectionID != nil {
+			cachedBinding.modelSet = append([]string(nil), modelsByCollectionID[*binding.ModelCollectionID]...)
+		}
+		if binding.ErrorCollectionID != nil {
+			cachedBinding.rules = append([]*cachedAccountRule(nil), rulesByCollectionID[*binding.ErrorCollectionID]...)
+		}
+		bindingsByKey[accountRuleBindingKey(binding.Platform, binding.BusinessType)] = cachedBinding
 	}
 
 	s.cacheMu.Lock()
 	s.cache = &accountRuleCacheSnapshot{
-		loadedAt:    time.Now(),
-		scopesByKey: scopesByKey,
+		loadedAt:      time.Now(),
+		bindingsByKey: bindingsByKey,
 	}
 	s.cacheMu.Unlock()
 	return nil
 }
 
-func accountRuleScopeKey(platform, accountType string) string {
-	return normalizeAccountRulePlatform(platform) + "|" + normalizeAccountRuleType(accountType)
+func accountRuleBindingKey(platform, businessType string) string {
+	return normalizeAccountRulePlatform(platform) + "|" + normalizeAccountRuleType(businessType)
 }

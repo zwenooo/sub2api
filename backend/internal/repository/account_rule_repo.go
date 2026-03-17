@@ -20,75 +20,264 @@ func NewAccountRuleRepository(db *sql.DB) service.AccountRuleRepository {
 	return &accountRuleRepository{db: db}
 }
 
-func (r *accountRuleRepository) ListScopes(ctx context.Context) ([]*service.AccountRuleScope, error) {
-	scopeRows, err := r.db.QueryContext(ctx, `
-SELECT id, platform, account_type, enabled, model_set, COALESCE(description, ''), created_at, updated_at
-FROM account_rule_scopes
-ORDER BY platform ASC, account_type ASC, id ASC`)
+func (r *accountRuleRepository) ListBindings(ctx context.Context) ([]*service.AccountRuleBinding, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, platform, business_type, enabled, model_collection_id, error_collection_id,
+       COALESCE(description, ''), created_at, updated_at
+FROM account_rule_collection_bindings
+ORDER BY platform ASC, business_type ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = scopeRows.Close() }()
+	defer func() { _ = rows.Close() }()
 
-	scopes := make([]*service.AccountRuleScope, 0)
-	scopeByID := make(map[int64]*service.AccountRuleScope)
-	scopeIDs := make([]int64, 0)
-
-	for scopeRows.Next() {
-		scope, err := scanAccountRuleScope(scopeRows)
-		if err != nil {
-			return nil, err
+	items := make([]*service.AccountRuleBinding, 0)
+	for rows.Next() {
+		item, scanErr := scanAccountRuleBinding(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		scope.Rules = []*service.AccountRuleErrorRule{}
-		scopes = append(scopes, scope)
-		scopeByID[scope.ID] = scope
-		scopeIDs = append(scopeIDs, scope.ID)
+		items = append(items, item)
 	}
-	if err := scopeRows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(scopeIDs) == 0 {
-		return scopes, nil
+	return items, nil
+}
+
+func (r *accountRuleRepository) GetBindingByID(ctx context.Context, id int64) (*service.AccountRuleBinding, error) {
+	row := r.db.QueryRowContext(ctx, `
+SELECT id, platform, business_type, enabled, model_collection_id, error_collection_id,
+       COALESCE(description, ''), created_at, updated_at
+FROM account_rule_collection_bindings
+WHERE id = $1`, id)
+	item, err := scanAccountRuleBinding(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+func (r *accountRuleRepository) CreateBinding(ctx context.Context, binding *service.AccountRuleBinding) (*service.AccountRuleBinding, error) {
+	row := r.db.QueryRowContext(ctx, `
+INSERT INTO account_rule_collection_bindings (
+  platform, business_type, enabled, model_collection_id, error_collection_id, description, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+ON CONFLICT (platform, business_type)
+DO UPDATE SET
+  enabled = EXCLUDED.enabled,
+  model_collection_id = EXCLUDED.model_collection_id,
+  error_collection_id = EXCLUDED.error_collection_id,
+  description = EXCLUDED.description,
+  updated_at = NOW()
+RETURNING id, platform, business_type, enabled, model_collection_id, error_collection_id,
+          COALESCE(description, ''), created_at, updated_at`,
+		binding.Platform,
+		binding.BusinessType,
+		binding.Enabled,
+		binding.ModelCollectionID,
+		binding.ErrorCollectionID,
+		nullIfEmpty(binding.Description),
+	)
+	return scanAccountRuleBinding(row)
+}
+
+func (r *accountRuleRepository) UpdateBinding(ctx context.Context, binding *service.AccountRuleBinding) (*service.AccountRuleBinding, error) {
+	row := r.db.QueryRowContext(ctx, `
+UPDATE account_rule_collection_bindings
+SET platform = $2,
+    business_type = $3,
+    enabled = $4,
+    model_collection_id = $5,
+    error_collection_id = $6,
+    description = $7,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, platform, business_type, enabled, model_collection_id, error_collection_id,
+          COALESCE(description, ''), created_at, updated_at`,
+		binding.ID,
+		binding.Platform,
+		binding.BusinessType,
+		binding.Enabled,
+		binding.ModelCollectionID,
+		binding.ErrorCollectionID,
+		nullIfEmpty(binding.Description),
+	)
+	item, err := scanAccountRuleBinding(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+func (r *accountRuleRepository) DeleteBinding(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM account_rule_collection_bindings WHERE id = $1`, id)
+	return err
+}
+
+func (r *accountRuleRepository) ListModelCollections(ctx context.Context) ([]*service.AccountRuleModelCollection, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, name, models, COALESCE(description, ''), created_at, updated_at
+FROM account_rule_model_collections
+ORDER BY name ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := make([]*service.AccountRuleModelCollection, 0)
+	for rows.Next() {
+		item, scanErr := scanAccountRuleModelCollection(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (r *accountRuleRepository) GetModelCollectionByID(ctx context.Context, id int64) (*service.AccountRuleModelCollection, error) {
+	row := r.db.QueryRowContext(ctx, `
+SELECT id, name, models, COALESCE(description, ''), created_at, updated_at
+FROM account_rule_model_collections
+WHERE id = $1`, id)
+	item, err := scanAccountRuleModelCollection(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+func (r *accountRuleRepository) CreateModelCollection(ctx context.Context, collection *service.AccountRuleModelCollection) (*service.AccountRuleModelCollection, error) {
+	models, err := marshalJSONString(collection.Models)
+	if err != nil {
+		return nil, err
+	}
+	row := r.db.QueryRowContext(ctx, `
+INSERT INTO account_rule_model_collections (name, models, description, created_at, updated_at)
+VALUES ($1, $2::jsonb, $3, NOW(), NOW())
+RETURNING id, name, models, COALESCE(description, ''), created_at, updated_at`,
+		collection.Name,
+		models,
+		nullIfEmpty(collection.Description),
+	)
+	return scanAccountRuleModelCollection(row)
+}
+
+func (r *accountRuleRepository) UpdateModelCollection(ctx context.Context, collection *service.AccountRuleModelCollection) (*service.AccountRuleModelCollection, error) {
+	models, err := marshalJSONString(collection.Models)
+	if err != nil {
+		return nil, err
+	}
+	row := r.db.QueryRowContext(ctx, `
+UPDATE account_rule_model_collections
+SET name = $2,
+    models = $3::jsonb,
+    description = $4,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, name, models, COALESCE(description, ''), created_at, updated_at`,
+		collection.ID,
+		collection.Name,
+		models,
+		nullIfEmpty(collection.Description),
+	)
+	item, scanErr := scanAccountRuleModelCollection(row)
+	if scanErr != nil {
+		if scanErr == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, scanErr
+	}
+	return item, nil
+}
+
+func (r *accountRuleRepository) DeleteModelCollection(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM account_rule_model_collections WHERE id = $1`, id)
+	return err
+}
+
+func (r *accountRuleRepository) ListErrorCollections(ctx context.Context) ([]*service.AccountRuleErrorCollection, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, name, COALESCE(description, ''), created_at, updated_at
+FROM account_rule_error_collections
+ORDER BY name ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := make([]*service.AccountRuleErrorCollection, 0)
+	collectionByID := make(map[int64]*service.AccountRuleErrorCollection)
+	collectionIDs := make([]int64, 0)
+	for rows.Next() {
+		item, scanErr := scanAccountRuleErrorCollection(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		item.Rules = []*service.AccountRuleErrorRule{}
+		items = append(items, item)
+		collectionByID[item.ID] = item
+		collectionIDs = append(collectionIDs, item.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(collectionIDs) == 0 {
+		return items, nil
 	}
 
 	ruleRows, err := r.db.QueryContext(ctx, `
-SELECT id, scope_id, name, enabled, priority, status_codes, keywords, match_mode,
+SELECT id, error_collection_id, name, enabled, priority, status_codes, keywords, match_mode,
        action_disable, action_failover, action_delete, action_override,
        passthrough_code, response_code, passthrough_body, custom_message,
        skip_monitoring, COALESCE(description, ''), COALESCE(sample_response, ''),
        created_at, updated_at
-FROM account_rule_error_rules
-WHERE scope_id = ANY($1)
-ORDER BY scope_id ASC, priority ASC, id ASC`, pq.Array(scopeIDs))
+FROM account_rule_error_collection_rules
+WHERE error_collection_id = ANY($1)
+ORDER BY error_collection_id ASC, priority ASC, id ASC`, pq.Array(collectionIDs))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = ruleRows.Close() }()
 
 	for ruleRows.Next() {
-		rule, err := scanAccountRuleErrorRule(ruleRows)
-		if err != nil {
-			return nil, err
+		rule, scanErr := scanAccountRuleErrorRule(ruleRows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		scope := scopeByID[rule.ScopeID]
-		if scope == nil {
+		collection := collectionByID[rule.ErrorCollectionID]
+		if collection == nil {
 			continue
 		}
-		scope.Rules = append(scope.Rules, rule)
+		collection.Rules = append(collection.Rules, rule)
 	}
 	if err := ruleRows.Err(); err != nil {
 		return nil, err
 	}
 
-	return scopes, nil
+	return items, nil
 }
 
-func (r *accountRuleRepository) GetScopeByID(ctx context.Context, id int64) (*service.AccountRuleScope, error) {
+func (r *accountRuleRepository) GetErrorCollectionByID(ctx context.Context, id int64) (*service.AccountRuleErrorCollection, error) {
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, platform, account_type, enabled, model_set, COALESCE(description, ''), created_at, updated_at
-FROM account_rule_scopes
+SELECT id, name, COALESCE(description, ''), created_at, updated_at
+FROM account_rule_error_collections
 WHERE id = $1`, id)
-	scope, err := scanAccountRuleScope(row)
+	collection, err := scanAccountRuleErrorCollection(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -97,109 +286,85 @@ WHERE id = $1`, id)
 	}
 
 	ruleRows, err := r.db.QueryContext(ctx, `
-SELECT id, scope_id, name, enabled, priority, status_codes, keywords, match_mode,
+SELECT id, error_collection_id, name, enabled, priority, status_codes, keywords, match_mode,
        action_disable, action_failover, action_delete, action_override,
        passthrough_code, response_code, passthrough_body, custom_message,
        skip_monitoring, COALESCE(description, ''), COALESCE(sample_response, ''),
        created_at, updated_at
-FROM account_rule_error_rules
-WHERE scope_id = $1
+FROM account_rule_error_collection_rules
+WHERE error_collection_id = $1
 ORDER BY priority ASC, id ASC`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = ruleRows.Close() }()
 
-	scope.Rules = make([]*service.AccountRuleErrorRule, 0)
+	collection.Rules = make([]*service.AccountRuleErrorRule, 0)
 	for ruleRows.Next() {
-		rule, err := scanAccountRuleErrorRule(ruleRows)
-		if err != nil {
-			return nil, err
+		rule, scanErr := scanAccountRuleErrorRule(ruleRows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		scope.Rules = append(scope.Rules, rule)
+		collection.Rules = append(collection.Rules, rule)
 	}
 	if err := ruleRows.Err(); err != nil {
 		return nil, err
 	}
-
-	return scope, nil
+	return collection, nil
 }
 
-func (r *accountRuleRepository) CreateScope(ctx context.Context, scope *service.AccountRuleScope) (*service.AccountRuleScope, error) {
-	modelSet, err := marshalJSONString(scope.ModelSet)
-	if err != nil {
-		return nil, err
-	}
+func (r *accountRuleRepository) CreateErrorCollection(ctx context.Context, collection *service.AccountRuleErrorCollection) (*service.AccountRuleErrorCollection, error) {
 	row := r.db.QueryRowContext(ctx, `
-INSERT INTO account_rule_scopes (platform, account_type, enabled, model_set, description, created_at, updated_at)
-VALUES ($1, $2, $3, $4::jsonb, $5, NOW(), NOW())
-ON CONFLICT (platform, account_type)
-DO UPDATE SET
-  enabled = EXCLUDED.enabled,
-  model_set = EXCLUDED.model_set,
-  description = EXCLUDED.description,
-  updated_at = NOW()
-RETURNING id, platform, account_type, enabled, model_set, COALESCE(description, ''), created_at, updated_at`,
-		scope.Platform,
-		scope.AccountType,
-		scope.Enabled,
-		modelSet,
-		nullIfEmpty(scope.Description),
+INSERT INTO account_rule_error_collections (name, description, created_at, updated_at)
+VALUES ($1, $2, NOW(), NOW())
+RETURNING id, name, COALESCE(description, ''), created_at, updated_at`,
+		collection.Name,
+		nullIfEmpty(collection.Description),
 	)
-	created, scanErr := scanAccountRuleScope(row)
-	if scanErr != nil {
-		return nil, scanErr
-	}
-	created.Rules = []*service.AccountRuleErrorRule{}
-	return created, nil
-}
-
-func (r *accountRuleRepository) UpdateScope(ctx context.Context, scope *service.AccountRuleScope) (*service.AccountRuleScope, error) {
-	modelSet, err := marshalJSONString(scope.ModelSet)
+	item, err := scanAccountRuleErrorCollection(row)
 	if err != nil {
 		return nil, err
 	}
+	item.Rules = []*service.AccountRuleErrorRule{}
+	return item, nil
+}
+
+func (r *accountRuleRepository) UpdateErrorCollection(ctx context.Context, collection *service.AccountRuleErrorCollection) (*service.AccountRuleErrorCollection, error) {
 	row := r.db.QueryRowContext(ctx, `
-UPDATE account_rule_scopes
-SET platform = $2,
-    account_type = $3,
-    enabled = $4,
-    model_set = $5::jsonb,
-    description = $6,
+UPDATE account_rule_error_collections
+SET name = $2,
+    description = $3,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, platform, account_type, enabled, model_set, COALESCE(description, ''), created_at, updated_at`,
-		scope.ID,
-		scope.Platform,
-		scope.AccountType,
-		scope.Enabled,
-		modelSet,
-		nullIfEmpty(scope.Description),
+RETURNING id, name, COALESCE(description, ''), created_at, updated_at`,
+		collection.ID,
+		collection.Name,
+		nullIfEmpty(collection.Description),
 	)
-	updated, scanErr := scanAccountRuleScope(row)
+	item, scanErr := scanAccountRuleErrorCollection(row)
 	if scanErr != nil {
 		if scanErr == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, scanErr
 	}
-	updated.Rules = scope.Rules
-	return updated, nil
+	item.Rules = collection.Rules
+	return item, nil
 }
 
-func (r *accountRuleRepository) DeleteScope(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM account_rule_scopes WHERE id = $1`, id)
+func (r *accountRuleRepository) DeleteErrorCollection(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM account_rule_error_collections WHERE id = $1`, id)
 	return err
 }
 
 func (r *accountRuleRepository) GetRuleByID(ctx context.Context, id int64) (*service.AccountRuleErrorRule, error) {
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, scope_id, name, enabled, priority, status_codes, keywords, match_mode,
+SELECT id, error_collection_id, name, enabled, priority, status_codes, keywords, match_mode,
        action_disable, action_failover, action_delete, action_override,
        passthrough_code, response_code, passthrough_body, custom_message,
        skip_monitoring, COALESCE(description, ''), COALESCE(sample_response, ''),
        created_at, updated_at
-FROM account_rule_error_rules
+FROM account_rule_error_collection_rules
 WHERE id = $1`, id)
 	rule, err := scanAccountRuleErrorRule(row)
 	if err != nil {
@@ -221,8 +386,8 @@ func (r *accountRuleRepository) CreateRule(ctx context.Context, rule *service.Ac
 		return nil, err
 	}
 	row := r.db.QueryRowContext(ctx, `
-INSERT INTO account_rule_error_rules (
-  scope_id, name, enabled, priority, status_codes, keywords, match_mode,
+INSERT INTO account_rule_error_collection_rules (
+  error_collection_id, name, enabled, priority, status_codes, keywords, match_mode,
   action_disable, action_failover, action_delete, action_override,
   passthrough_code, response_code, passthrough_body, custom_message,
   skip_monitoring, description, sample_response, created_at, updated_at
@@ -233,12 +398,12 @@ VALUES (
   $12, $13, $14, $15,
   $16, $17, $18, NOW(), NOW()
 )
-RETURNING id, scope_id, name, enabled, priority, status_codes, keywords, match_mode,
+RETURNING id, error_collection_id, name, enabled, priority, status_codes, keywords, match_mode,
           action_disable, action_failover, action_delete, action_override,
           passthrough_code, response_code, passthrough_body, custom_message,
           skip_monitoring, COALESCE(description, ''), COALESCE(sample_response, ''),
           created_at, updated_at`,
-		rule.ScopeID,
+		rule.ErrorCollectionID,
 		rule.Name,
 		rule.Enabled,
 		rule.Priority,
@@ -270,7 +435,7 @@ func (r *accountRuleRepository) UpdateRule(ctx context.Context, rule *service.Ac
 		return nil, err
 	}
 	row := r.db.QueryRowContext(ctx, `
-UPDATE account_rule_error_rules
+UPDATE account_rule_error_collection_rules
 SET name = $2,
     enabled = $3,
     priority = $4,
@@ -290,7 +455,7 @@ SET name = $2,
     sample_response = $18,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, scope_id, name, enabled, priority, status_codes, keywords, match_mode,
+RETURNING id, error_collection_id, name, enabled, priority, status_codes, keywords, match_mode,
           action_disable, action_failover, action_delete, action_override,
           passthrough_code, response_code, passthrough_body, custom_message,
           skip_monitoring, COALESCE(description, ''), COALESCE(sample_response, ''),
@@ -325,11 +490,11 @@ RETURNING id, scope_id, name, enabled, priority, status_codes, keywords, match_m
 }
 
 func (r *accountRuleRepository) DeleteRule(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM account_rule_error_rules WHERE id = $1`, id)
+	_, err := r.db.ExecContext(ctx, `DELETE FROM account_rule_error_collection_rules WHERE id = $1`, id)
 	return err
 }
 
-func (r *accountRuleRepository) ListObservedScopes(ctx context.Context) ([]*service.AccountRuleObservedScope, error) {
+func (r *accountRuleRepository) ListObservedBindings(ctx context.Context) ([]*service.AccountRuleObservedBinding, error) {
 	rows, err := r.db.QueryContext(ctx, `
 SELECT platform,
        COALESCE(NULLIF(type, ''), ''),
@@ -343,10 +508,10 @@ ORDER BY platform ASC`)
 	defer func() { _ = rows.Close() }()
 
 	type key struct {
-		platform    string
-		accountType string
+		platform     string
+		businessType string
 	}
-	counts := make(map[key]*service.AccountRuleObservedScope)
+	counts := make(map[key]*service.AccountRuleObservedBinding)
 	for rows.Next() {
 		var (
 			platform        string
@@ -363,15 +528,15 @@ ORDER BY platform ASC`)
 			Type:     strings.TrimSpace(accountType),
 		}
 		if account.Credentials, err = unmarshalObservedAccountJSONMap(credentialsJSON); err != nil {
-			return nil, fmt.Errorf("unmarshal observed scope credentials: %w", err)
+			return nil, fmt.Errorf("unmarshal observed binding credentials: %w", err)
 		}
 		if account.Extra, err = unmarshalObservedAccountJSONMap(extraJSON); err != nil {
-			return nil, fmt.Errorf("unmarshal observed scope extra: %w", err)
+			return nil, fmt.Errorf("unmarshal observed binding extra: %w", err)
 		}
 
 		k := key{
-			platform:    strings.ToLower(strings.TrimSpace(account.Platform)),
-			accountType: account.AccountRuleScopeType(),
+			platform:     strings.ToLower(strings.TrimSpace(account.Platform)),
+			businessType: account.AccountRuleScopeType(),
 		}
 		if k.platform == "" {
 			continue
@@ -380,9 +545,9 @@ ORDER BY platform ASC`)
 			existing.AccountCount++
 			continue
 		}
-		counts[k] = &service.AccountRuleObservedScope{
+		counts[k] = &service.AccountRuleObservedBinding{
 			Platform:     k.platform,
-			AccountType:  k.accountType,
+			BusinessType: k.businessType,
 			AccountCount: 1,
 		}
 	}
@@ -390,7 +555,7 @@ ORDER BY platform ASC`)
 		return nil, err
 	}
 
-	items := make([]*service.AccountRuleObservedScope, 0, len(counts))
+	items := make([]*service.AccountRuleObservedBinding, 0, len(counts))
 	for _, item := range counts {
 		items = append(items, item)
 	}
@@ -398,7 +563,7 @@ ORDER BY platform ASC`)
 		if items[i].Platform != items[j].Platform {
 			return items[i].Platform < items[j].Platform
 		}
-		return items[i].AccountType < items[j].AccountType
+		return items[i].BusinessType < items[j].BusinessType
 	})
 	return items, nil
 }
@@ -414,34 +579,84 @@ func unmarshalObservedAccountJSONMap(raw []byte) (map[string]any, error) {
 	return out, nil
 }
 
-type accountRuleScopeScanner interface {
+type accountRuleBindingScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanAccountRuleScope(scanner accountRuleScopeScanner) (*service.AccountRuleScope, error) {
+func scanAccountRuleBinding(scanner accountRuleBindingScanner) (*service.AccountRuleBinding, error) {
 	var (
-		scope        service.AccountRuleScope
-		modelSetJSON []byte
+		item              service.AccountRuleBinding
+		modelCollectionID sql.NullInt64
+		errorCollectionID sql.NullInt64
 	)
 	if err := scanner.Scan(
-		&scope.ID,
-		&scope.Platform,
-		&scope.AccountType,
-		&scope.Enabled,
-		&modelSetJSON,
-		&scope.Description,
-		&scope.CreatedAt,
-		&scope.UpdatedAt,
+		&item.ID,
+		&item.Platform,
+		&item.BusinessType,
+		&item.Enabled,
+		&modelCollectionID,
+		&errorCollectionID,
+		&item.Description,
+		&item.CreatedAt,
+		&item.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(modelSetJSON, &scope.ModelSet); err != nil {
-		return nil, fmt.Errorf("unmarshal scope model_set: %w", err)
+	if modelCollectionID.Valid {
+		v := modelCollectionID.Int64
+		item.ModelCollectionID = &v
 	}
-	if scope.ModelSet == nil {
-		scope.ModelSet = []string{}
+	if errorCollectionID.Valid {
+		v := errorCollectionID.Int64
+		item.ErrorCollectionID = &v
 	}
-	return &scope, nil
+	return &item, nil
+}
+
+type accountRuleModelCollectionScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAccountRuleModelCollection(scanner accountRuleModelCollectionScanner) (*service.AccountRuleModelCollection, error) {
+	var (
+		item       service.AccountRuleModelCollection
+		modelsJSON []byte
+	)
+	if err := scanner.Scan(
+		&item.ID,
+		&item.Name,
+		&modelsJSON,
+		&item.Description,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(modelsJSON, &item.Models); err != nil {
+		return nil, fmt.Errorf("unmarshal model collection models: %w", err)
+	}
+	if item.Models == nil {
+		item.Models = []string{}
+	}
+	return &item, nil
+}
+
+type accountRuleErrorCollectionScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAccountRuleErrorCollection(scanner accountRuleErrorCollectionScanner) (*service.AccountRuleErrorCollection, error) {
+	var item service.AccountRuleErrorCollection
+	if err := scanner.Scan(
+		&item.ID,
+		&item.Name,
+		&item.Description,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 type accountRuleErrorRuleScanner interface {
@@ -458,7 +673,7 @@ func scanAccountRuleErrorRule(scanner accountRuleErrorRuleScanner) (*service.Acc
 	)
 	if err := scanner.Scan(
 		&rule.ID,
-		&rule.ScopeID,
+		&rule.ErrorCollectionID,
 		&rule.Name,
 		&rule.Enabled,
 		&rule.Priority,
