@@ -51,15 +51,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { AccountPlatform, AccountType } from '@/types'
 import PlatformIcon from './PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 
 const { t } = useI18n()
 
 interface Props {
-  platform: AccountPlatform
-  type: AccountType
+  platform: string
+  type: string
   planType?: string
   privacyMode?: string
 }
@@ -69,9 +68,10 @@ const props = defineProps<Props>()
 const platformLabel = computed(() => {
   if (props.platform === 'anthropic') return 'Anthropic'
   if (props.platform === 'openai') return 'OpenAI'
+  if (props.platform === 'gemini') return 'Gemini'
   if (props.platform === 'antigravity') return 'Antigravity'
   if (props.platform === 'sora') return 'Sora'
-  return 'Gemini'
+  return props.platform || '-'
 })
 
 const typeLabel = computed(() => {
