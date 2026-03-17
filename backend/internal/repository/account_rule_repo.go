@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -160,13 +161,17 @@ func (r *accountRuleRepository) UpdateScope(ctx context.Context, scope *service.
 	}
 	row := r.db.QueryRowContext(ctx, `
 UPDATE account_rule_scopes
-SET enabled = $2,
-    model_set = $3::jsonb,
-    description = $4,
+SET platform = $2,
+    account_type = $3,
+    enabled = $4,
+    model_set = $5::jsonb,
+    description = $6,
     updated_at = NOW()
 WHERE id = $1
 RETURNING id, platform, account_type, enabled, model_set, COALESCE(description, ''), created_at, updated_at`,
 		scope.ID,
+		scope.Platform,
+		scope.AccountType,
 		scope.Enabled,
 		modelSet,
 		nullIfEmpty(scope.Description),
@@ -326,29 +331,87 @@ func (r *accountRuleRepository) DeleteRule(ctx context.Context, id int64) error 
 
 func (r *accountRuleRepository) ListObservedScopes(ctx context.Context) ([]*service.AccountRuleObservedScope, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT platform, COALESCE(NULLIF(type, ''), ''), COUNT(*)
+SELECT platform,
+       COALESCE(NULLIF(type, ''), ''),
+       COALESCE(credentials, '{}'::jsonb),
+       COALESCE(extra, '{}'::jsonb)
 FROM accounts
-GROUP BY platform, COALESCE(NULLIF(type, ''), '')
-ORDER BY platform ASC, COALESCE(NULLIF(type, ''), '') ASC`)
+ORDER BY platform ASC`)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	items := make([]*service.AccountRuleObservedScope, 0)
+	type key struct {
+		platform    string
+		accountType string
+	}
+	counts := make(map[key]*service.AccountRuleObservedScope)
 	for rows.Next() {
-		var item service.AccountRuleObservedScope
-		if err := rows.Scan(&item.Platform, &item.AccountType, &item.AccountCount); err != nil {
+		var (
+			platform        string
+			accountType     string
+			credentialsJSON []byte
+			extraJSON       []byte
+		)
+		if err := rows.Scan(&platform, &accountType, &credentialsJSON, &extraJSON); err != nil {
 			return nil, err
 		}
-		item.Platform = strings.ToLower(strings.TrimSpace(item.Platform))
-		item.AccountType = strings.ToLower(strings.TrimSpace(item.AccountType))
-		items = append(items, &item)
+
+		account := &service.Account{
+			Platform: strings.TrimSpace(platform),
+			Type:     strings.TrimSpace(accountType),
+		}
+		if account.Credentials, err = unmarshalObservedAccountJSONMap(credentialsJSON); err != nil {
+			return nil, fmt.Errorf("unmarshal observed scope credentials: %w", err)
+		}
+		if account.Extra, err = unmarshalObservedAccountJSONMap(extraJSON); err != nil {
+			return nil, fmt.Errorf("unmarshal observed scope extra: %w", err)
+		}
+
+		k := key{
+			platform:    strings.ToLower(strings.TrimSpace(account.Platform)),
+			accountType: account.AccountRuleScopeType(),
+		}
+		if k.platform == "" {
+			continue
+		}
+		if existing, ok := counts[k]; ok {
+			existing.AccountCount++
+			continue
+		}
+		counts[k] = &service.AccountRuleObservedScope{
+			Platform:     k.platform,
+			AccountType:  k.accountType,
+			AccountCount: 1,
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	items := make([]*service.AccountRuleObservedScope, 0, len(counts))
+	for _, item := range counts {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Platform != items[j].Platform {
+			return items[i].Platform < items[j].Platform
+		}
+		return items[i].AccountType < items[j].AccountType
+	})
 	return items, nil
+}
+
+func unmarshalObservedAccountJSONMap(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 type accountRuleScopeScanner interface {

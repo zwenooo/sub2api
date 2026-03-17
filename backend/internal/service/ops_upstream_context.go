@@ -165,15 +165,15 @@ func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEve
 	}
 
 	if scopedSvc := getBoundAccountRuleService(c); scopedSvc != nil {
-		accountType := ""
+		scopeType := ""
 		if c.Request != nil {
-			if v, ok := c.Request.Context().Value(ctxkey.AccountType).(string); ok {
-				accountType = strings.TrimSpace(v)
+			if v, ok := c.Request.Context().Value(ctxkey.AccountScopeType).(string); ok {
+				scopeType = strings.TrimSpace(v)
 			}
 		}
 		match := scopedSvc.MatchRuntimeRule(&Account{
-			Platform: ev.Platform,
-			Type:     accountType,
+			Platform:      ev.Platform,
+			RuleScopeType: scopeType,
 		}, ev.UpstreamStatusCode, []byte(body))
 		if match != nil && match.Rule != nil && match.Rule.SkipMonitoring {
 			c.Set(OpsSkipPassthroughKey, true)

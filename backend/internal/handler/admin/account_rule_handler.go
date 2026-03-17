@@ -129,6 +129,10 @@ func (h *AccountRuleHandler) UpdateScope(c *gin.Context) {
 	if req.Enabled != nil {
 		scope.Enabled = *req.Enabled
 	}
+	if strings.TrimSpace(req.Platform) != "" {
+		scope.Platform = req.Platform
+	}
+	scope.AccountType = req.AccountType
 	if req.ModelSet == nil {
 		scope.ModelSet = existing.ModelSet
 	}
@@ -405,7 +409,7 @@ func (h *AccountRuleHandler) buildDraftFromOpsDetail(c *gin.Context, detail *ser
 			account, err := h.accountRepo.GetByID(c.Request.Context(), *detail.AccountID)
 			if err == nil && account != nil {
 				platform = account.Platform
-				accountType = account.Type
+				accountType = account.AccountRuleScopeType()
 				if strings.TrimSpace(accountName) == "" {
 					accountName = account.Name
 				}

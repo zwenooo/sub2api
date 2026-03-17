@@ -361,7 +361,7 @@ func attachOpsRequestBodyToEntry(c *gin.Context, entry *service.OpsInsertErrorLo
 	opsErrorLogSanitized.Add(1)
 }
 
-func setOpsSelectedAccount(c *gin.Context, accountID int64, platform string, accountType ...string) {
+func setOpsSelectedAccount(c *gin.Context, accountID int64, platform string, accountType string, scopeType string) {
 	if c == nil || accountID <= 0 {
 		return
 	}
@@ -371,11 +371,11 @@ func setOpsSelectedAccount(c *gin.Context, accountID int64, platform string, acc
 		if p := strings.TrimSpace(platform); p != "" {
 			ctx = context.WithValue(ctx, ctxkey.Platform, p)
 		}
-		if len(accountType) > 0 {
-			t := strings.TrimSpace(accountType[0])
-			if t != "" {
-				ctx = context.WithValue(ctx, ctxkey.AccountType, t)
-			}
+		if t := strings.TrimSpace(accountType); t != "" {
+			ctx = context.WithValue(ctx, ctxkey.AccountType, t)
+		}
+		if t := strings.TrimSpace(scopeType); t != "" {
+			ctx = context.WithValue(ctx, ctxkey.AccountScopeType, t)
 		}
 		c.Request = c.Request.WithContext(ctx)
 	}

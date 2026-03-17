@@ -108,7 +108,7 @@ func synthesizePlatformObservedScopes(observed []*AccountRuleObservedScope) []*A
 		scopeTyp string
 	}
 	items := make([]*AccountRuleObservedScope, 0, len(observed)*2)
-	seen := make(map[key]struct{}, len(observed)*2)
+	itemByKey := make(map[key]*AccountRuleObservedScope, len(observed)*2)
 	platformCounts := make(map[string]int64)
 
 	for _, item := range observed {
@@ -122,27 +122,32 @@ func synthesizePlatformObservedScopes(observed []*AccountRuleObservedScope) []*A
 		}
 		platformCounts[item.Platform] += item.AccountCount
 		k := key{platform: item.Platform, scopeTyp: item.AccountType}
-		if _, exists := seen[k]; exists {
+		if existing, exists := itemByKey[k]; exists {
+			existing.AccountCount += item.AccountCount
 			continue
 		}
-		seen[k] = struct{}{}
-		items = append(items, &AccountRuleObservedScope{
+		copied := &AccountRuleObservedScope{
 			Platform:     item.Platform,
 			AccountType:  item.AccountType,
 			AccountCount: item.AccountCount,
-		})
+		}
+		itemByKey[k] = copied
+		items = append(items, copied)
 	}
 
 	for platform, count := range platformCounts {
 		k := key{platform: platform, scopeTyp: ""}
-		if _, exists := seen[k]; exists {
+		if existing, exists := itemByKey[k]; exists {
+			existing.AccountCount = count
 			continue
 		}
-		items = append(items, &AccountRuleObservedScope{
+		copied := &AccountRuleObservedScope{
 			Platform:     platform,
 			AccountType:  "",
 			AccountCount: count,
-		})
+		}
+		itemByKey[k] = copied
+		items = append(items, copied)
 	}
 
 	sortObservedScopes(items)
@@ -329,7 +334,7 @@ func (s *AccountRuleService) MatchRuntimeRule(account *Account, statusCode int, 
 	}
 
 	platform := normalizeAccountRulePlatform(account.Platform)
-	accountType := normalizeAccountRuleType(account.Type)
+	accountType := account.AccountRuleScopeType()
 	if platform == "" {
 		return nil
 	}
@@ -415,7 +420,11 @@ func (s *AccountRuleService) ApplyMatchedRule(ctx context.Context, account *Acco
 	if msg == "" {
 		msg = fmt.Sprintf("status=%d", statusCode)
 	}
-	reason := fmt.Sprintf("account rule matched: %s (%s/%s): %s", match.Rule.Name, account.Platform, account.Type, msg)
+	scopeType := account.AccountRuleScopeType()
+	if scopeType == "" {
+		scopeType = "platform"
+	}
+	reason := fmt.Sprintf("account rule matched: %s (%s/%s): %s", match.Rule.Name, account.Platform, scopeType, msg)
 
 	if s.accountRepo == nil {
 		return result
@@ -442,7 +451,7 @@ func (s *AccountRuleService) ResolveScopedModelSet(account *Account) []string {
 		return nil
 	}
 	platform := normalizeAccountRulePlatform(account.Platform)
-	accountType := normalizeAccountRuleType(account.Type)
+	accountType := account.AccountRuleScopeType()
 	if platform == "" {
 		return nil
 	}

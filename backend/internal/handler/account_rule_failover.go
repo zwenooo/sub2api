@@ -20,16 +20,16 @@ func resolveAccountRuleFailoverResponse(
 		return 0, "", "", false
 	}
 
-	accountType := ""
+	scopeType := ""
 	if c.Request != nil {
-		if v, ok := c.Request.Context().Value(ctxkey.AccountType).(string); ok {
-			accountType = strings.TrimSpace(v)
+		if v, ok := c.Request.Context().Value(ctxkey.AccountScopeType).(string); ok {
+			scopeType = strings.TrimSpace(v)
 		}
 	}
 
 	match := accountRuleService.MatchRuntimeRule(&service.Account{
-		Platform: platform,
-		Type:     accountType,
+		Platform:      platform,
+		RuleScopeType: scopeType,
 	}, statusCode, responseBody)
 	if match == nil || match.Rule == nil || !match.Rule.ActionOverride {
 		return 0, "", "", false

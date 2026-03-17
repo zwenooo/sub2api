@@ -253,7 +253,7 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 		account := selection.Account
-		setOpsSelectedAccount(c, account.ID, account.Platform)
+		setOpsSelectedAccount(c, account.ID, account.Platform, account.Type, account.AccountRuleScopeType())
 		proxyBound := account.ProxyID != nil
 		proxyID := int64(0)
 		if account.ProxyID != nil {
@@ -331,6 +331,9 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failedAccountIDs[account.ID] = struct{}{}
+				if failoverErr.MaxSwitchesOverride > 0 {
+					maxAccountSwitches = failoverErr.MaxSwitchesOverride
+				}
 				if switchCount >= maxAccountSwitches {
 					lastFailoverStatus = failoverErr.StatusCode
 					lastFailoverHeaders = cloneHTTPHeaders(failoverErr.ResponseHeaders)

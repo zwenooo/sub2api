@@ -9,9 +9,9 @@
       <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div class="space-y-1">
-            <div class="text-sm font-semibold text-gray-900 dark:text-white">统一管理平台 / 平台+类型的模型集合与错误规则</div>
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">统一管理平台 / 平台+业务类型的模型集合与错误规则</div>
             <div class="text-xs text-gray-500 dark:text-gray-400">
-              作用域优先级为“平台+类型”高于“平台”。同一作用域下同时管理模型集合、错误匹配条件和命中后的动作。
+              作用域优先级为“平台+业务类型”高于“平台”。同一作用域下同时管理模型集合、错误匹配条件和命中后的动作。
             </div>
             <div
               v-if="draftHint"
@@ -95,7 +95,18 @@
                 <div class="flex items-start justify-between gap-3">
                   <div class="min-w-0">
                     <div class="flex flex-wrap items-center gap-2">
-                      <PlatformTypeBadge :platform="scope.platform" :type="scope.account_type" />
+                      <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+                        <PlatformIcon :platform="scope.platform" size="xs" />
+                        <span>{{ formatPlatformLabel(scope.platform) }}</span>
+                      </span>
+                      <span
+                        :class="[
+                          'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
+                          scopeTypeBadgeClass(scope.account_type)
+                        ]"
+                      >
+                        {{ formatScopeTypeLabel(scope.platform, scope.account_type) }}
+                      </span>
                       <span
                         :class="[
                           'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
@@ -124,12 +135,12 @@
             <div class="mb-3">
               <div class="text-sm font-semibold text-gray-900 dark:text-white">从现有账号快速建作用域</div>
               <div class="text-xs text-gray-500 dark:text-gray-400">
-                账号管理里出现过的平台 / 类型组合，都可以直接一键生成作用域。
+                账号管理里出现过的平台 / 业务类型组合，都可以直接一键生成作用域。
               </div>
             </div>
 
             <div v-if="!unconfiguredObservedScopes.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
-              当前已覆盖所有已观测到的平台 / 类型组合。
+              当前已覆盖所有已观测到的平台 / 业务类型组合。
             </div>
 
             <div v-else class="space-y-2">
@@ -141,7 +152,18 @@
                 @click="openCreateScope(scope)"
               >
                 <div class="flex min-w-0 items-center gap-2">
-                  <PlatformTypeBadge :platform="scope.platform" :type="scope.account_type" />
+                  <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+                    <PlatformIcon :platform="scope.platform" size="xs" />
+                    <span>{{ formatPlatformLabel(scope.platform) }}</span>
+                  </span>
+                  <span
+                    :class="[
+                      'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
+                      scopeTypeBadgeClass(scope.account_type)
+                    ]"
+                  >
+                    {{ formatScopeTypeLabel(scope.platform, scope.account_type) }}
+                  </span>
                   <span class="text-xs text-gray-500 dark:text-gray-400">{{ scope.account_count }} 个账号</span>
                 </div>
                 <span class="text-xs font-medium text-primary-600 dark:text-primary-300">创建</span>
@@ -158,7 +180,18 @@
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div class="space-y-2">
                 <div class="flex flex-wrap items-center gap-2">
-                  <PlatformTypeBadge :platform="selectedScope.platform" :type="selectedScope.account_type" />
+                  <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+                    <PlatformIcon :platform="selectedScope.platform" size="xs" />
+                    <span>{{ formatPlatformLabel(selectedScope.platform) }}</span>
+                  </span>
+                  <span
+                    :class="[
+                      'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
+                      scopeTypeBadgeClass(selectedScope.account_type)
+                    ]"
+                  >
+                    {{ formatScopeTypeLabel(selectedScope.platform, selectedScope.account_type) }}
+                  </span>
                   <span
                     :class="[
                       'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
@@ -338,11 +371,12 @@
         <div class="grid gap-4 md:grid-cols-2">
           <div>
             <label class="input-label">平台</label>
-            <input v-model.trim="scopeForm.platform" type="text" class="input" placeholder="例如 openai / gemini" :disabled="!!editingScopeId" />
+            <input v-model.trim="scopeForm.platform" type="text" class="input" placeholder="例如 openai / gemini" />
           </div>
           <div>
-            <label class="input-label">类型</label>
-            <input v-model.trim="scopeForm.account_type" type="text" class="input" placeholder="留空表示平台级作用域" :disabled="!!editingScopeId" />
+            <label class="input-label">业务类型</label>
+            <input v-model.trim="scopeForm.account_type" type="text" class="input" placeholder="例如 team / google_ai_pro / free-tier；留空表示平台级作用域" />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">OpenAI / Sora 优先取 plan_type；Gemini 取 tier_id 或 oauth_type；Antigravity 取订阅 tier。</p>
           </div>
         </div>
 
@@ -353,7 +387,7 @@
 
         <div>
           <label class="input-label">作用域说明</label>
-          <input v-model.trim="scopeForm.description" type="text" class="input" placeholder="例如：OpenAI API Key 账号统一规则" />
+          <input v-model.trim="scopeForm.description" type="text" class="input" placeholder="例如：OpenAI Team 账号统一规则" />
         </div>
 
         <div>
@@ -526,7 +560,7 @@ model is not supported"
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
-import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
+import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import { accountRulesAPI, type AccountRuleCatalog, type AccountRuleDraft, type AccountRuleErrorRule, type AccountRuleObservedScope, type AccountRuleScope, type UpsertAccountRuleRequest, type UpsertAccountRuleScopeRequest } from '@/api/admin/accountRules'
@@ -623,6 +657,81 @@ function scopeKey(scope: Pick<AccountRuleScope, 'platform' | 'account_type'>): s
 
 function observedScopeKey(scope: Pick<AccountRuleObservedScope, 'platform' | 'account_type'>): string {
   return `${scope.platform.trim().toLowerCase()}::${scope.account_type.trim().toLowerCase()}`
+}
+
+function formatPlatformLabel(platform: string): string {
+  const normalized = platform.trim().toLowerCase()
+  switch (normalized) {
+    case 'anthropic':
+      return 'Anthropic'
+    case 'openai':
+      return 'OpenAI'
+    case 'gemini':
+      return 'Gemini'
+    case 'antigravity':
+      return 'Antigravity'
+    case 'sora':
+      return 'Sora'
+    default:
+      return platform || '-'
+  }
+}
+
+function formatScopeTypeLabel(platform: string, accountType: string): string {
+  const normalized = accountType.trim().toLowerCase()
+  if (!normalized) return '平台级'
+
+  switch (normalized) {
+    case 'plus':
+      return 'Plus'
+    case 'team':
+      return 'Team'
+    case 'chatgptpro':
+    case 'pro':
+      return 'Pro'
+    case 'free':
+      return 'Free'
+    case 'google_one':
+      return 'Google One'
+    case 'google_one_free':
+      return 'Google One Free'
+    case 'google_ai_pro':
+      return 'Google AI Pro'
+    case 'google_ai_ultra':
+      return 'Google AI Ultra'
+    case 'gcp_standard':
+      return 'GCP Standard'
+    case 'gcp_enterprise':
+      return 'GCP Enterprise'
+    case 'aistudio_free':
+      return 'AI Studio Free'
+    case 'aistudio_paid':
+      return 'AI Studio Paid'
+    case 'ai_studio':
+      return 'AI Studio'
+    case 'code_assist':
+      return 'Code Assist'
+    case 'free-tier':
+      return 'Free'
+    case 'g1-pro-tier':
+      return 'Pro'
+    case 'g1-ultra-tier':
+      return 'Ultra'
+    case 'bedrock':
+      return 'Bedrock'
+    default:
+      if (platform.trim().toLowerCase() === 'sora' && normalized === 'team') {
+        return 'Team'
+      }
+      return accountType
+  }
+}
+
+function scopeTypeBadgeClass(accountType: string): string {
+  if (!accountType.trim()) {
+    return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
+  }
+  return 'bg-primary-50 text-primary-700 dark:bg-primary-900/20 dark:text-primary-300'
 }
 
 function resetScopeForm() {
@@ -793,7 +902,7 @@ async function saveScope() {
 }
 
 async function removeScope(scope: AccountRuleScope) {
-  if (!window.confirm(`确定删除作用域 ${scope.platform}${scope.account_type ? ` / ${scope.account_type}` : ''} 吗？`)) {
+  if (!window.confirm(`确定删除作用域 ${formatPlatformLabel(scope.platform)} / ${formatScopeTypeLabel(scope.platform, scope.account_type)} 吗？`)) {
     return
   }
 

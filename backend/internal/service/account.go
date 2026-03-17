@@ -23,6 +23,9 @@ type Account struct {
 	Type        string
 	Credentials map[string]any
 	Extra       map[string]any
+	// RuleScopeType 用于显式指定账号规则匹配时的业务类型。
+	// 为空时会根据账号平台、订阅信息和额外元数据自动推导。
+	RuleScopeType string
 	ProxyID     *int64
 	Concurrency int
 	Priority    int
@@ -159,6 +162,68 @@ func (a *Account) GeminiOAuthType() string {
 func (a *Account) GeminiTierID() string {
 	tierID := strings.TrimSpace(a.GetCredential("tier_id"))
 	return tierID
+}
+
+func (a *Account) AccountRuleScopeType() string {
+	if a == nil {
+		return ""
+	}
+	if explicit := normalizeAccountRuleType(a.RuleScopeType); explicit != "" {
+		return explicit
+	}
+
+	switch normalizeAccountRulePlatform(a.Platform) {
+	case PlatformOpenAI, PlatformSora:
+		if planType := normalizeAccountRuleType(a.GetCredential("plan_type")); planType != "" {
+			return planType
+		}
+	case PlatformGemini:
+		if tierID := normalizeAccountRuleType(a.GetCredential("tier_id")); tierID != "" {
+			return tierID
+		}
+		if oauthType := normalizeAccountRuleType(a.GetCredential("oauth_type")); oauthType != "" {
+			return oauthType
+		}
+		if normalizeAccountRuleType(a.Type) == AccountTypeAPIKey {
+			return "ai_studio"
+		}
+	case PlatformAntigravity:
+		if tierID := normalizeAccountRuleType(a.GetCredential("tier_id")); tierID != "" {
+			return tierID
+		}
+		if tierID := normalizeAccountRuleType(a.antigravityLoadCodeAssistTier()); tierID != "" {
+			return tierID
+		}
+	case PlatformAnthropic:
+		if normalizeAccountRuleType(a.Type) == AccountTypeBedrock {
+			return AccountTypeBedrock
+		}
+	}
+
+	return ""
+}
+
+func (a *Account) antigravityLoadCodeAssistTier() string {
+	if a == nil || normalizeAccountRulePlatform(a.Platform) != PlatformAntigravity || a.Extra == nil {
+		return ""
+	}
+	if tierID := nestedMapString(a.Extra, "load_code_assist", "paidTier", "id"); tierID != "" {
+		return tierID
+	}
+	return nestedMapString(a.Extra, "load_code_assist", "currentTier", "id")
+}
+
+func nestedMapString(root map[string]any, keys ...string) string {
+	var current any = root
+	for _, key := range keys {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current = m[key]
+	}
+	value, _ := current.(string)
+	return strings.TrimSpace(value)
 }
 
 func (a *Account) IsGeminiCodeAssist() bool {
