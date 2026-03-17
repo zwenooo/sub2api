@@ -85,13 +85,17 @@ export default adminAPI
 export type { BalanceHistoryItem } from './users'
 export type { ErrorPassthroughRule, CreateRuleRequest, UpdateRuleRequest } from './errorPassthrough'
 export type {
+  AccountRuleBinding,
   AccountRuleCatalog,
   AccountRuleDraft,
+  AccountRuleErrorCollection,
   AccountRuleErrorRule,
-  AccountRuleObservedScope,
-  AccountRuleScope,
+  AccountRuleModelCollection,
+  AccountRuleObservedBinding,
   AccountRuleSettings,
-  UpsertAccountRuleRequest,
-  UpsertAccountRuleScopeRequest
+  UpsertAccountRuleBindingRequest,
+  UpsertAccountRuleErrorCollectionRequest,
+  UpsertAccountRuleModelCollectionRequest,
+  UpsertAccountRuleRequest
 } from './accountRules'
 export type { BackupAgentHealth, DataManagementConfig } from './dataManagement'
