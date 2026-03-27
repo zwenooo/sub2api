@@ -289,11 +289,15 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.POST("/data", h.Admin.Account.ImportData)
 		accounts.POST("/openai-auths/import", h.Admin.Account.ImportOpenAIAuthJSON)
 		accounts.POST("/openai-auths/import-file", h.Admin.Account.ImportOpenAIAuthFile)
+		accounts.POST("/openai-rt-import", h.Admin.Account.ImportOpenAIRTAccounts)
 		accounts.POST("/batch-update-credentials", h.Admin.Account.BatchUpdateCredentials)
 		accounts.POST("/batch-refresh-tier", h.Admin.Account.BatchRefreshTier)
 		accounts.POST("/bulk-update", h.Admin.Account.BulkUpdate)
 		accounts.POST("/batch-clear-error", h.Admin.Account.BatchClearError)
 		accounts.POST("/batch-refresh", h.Admin.Account.BatchRefresh)
+		accounts.POST("/batch-refresh-pending-openai", h.Admin.Account.BatchRefreshPendingOpenAI)
+		accounts.GET("/openai-auto-disable-rules", h.Admin.Account.GetOpenAIAutoDisableRules)
+		accounts.PUT("/openai-auto-disable-rules", h.Admin.Account.UpdateOpenAIAutoDisableRules)
 
 		// Antigravity 默认模型映射
 		accounts.GET("/antigravity/default-model-mapping", h.Admin.Account.GetAntigravityDefaultModelMapping)

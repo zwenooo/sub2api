@@ -2549,7 +2549,7 @@ func (s *adminServiceImpl) EnsureOpenAIPrivacy(ctx context.Context, account *Acc
 		return ""
 	}
 	if account.Extra != nil {
-		if _, ok := account.Extra["privacy_mode"]; ok {
+		if mode, _ := account.Extra["privacy_mode"].(string); strings.TrimSpace(mode) == PrivacyModeTrainingOff {
 			return ""
 		}
 	}

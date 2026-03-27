@@ -192,6 +192,13 @@ const (
 	SettingKeyBetaPolicySettings = "beta_policy_settings"
 
 	// =========================
+	// OpenAI Auto Disable Rules
+	// =========================
+
+	// SettingKeyOpenAIAutoDisableSettings stores JSON config for OpenAI upstream auto-disable rules.
+	SettingKeyOpenAIAutoDisableSettings = "openai_auto_disable_settings"
+
+	// =========================
 	// Sora S3 存储配置
 	// =========================
 

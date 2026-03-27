@@ -1384,6 +1384,99 @@ func (s *SettingService) SetBetaPolicySettings(ctx context.Context, settings *Be
 	return s.settingRepo.Set(ctx, SettingKeyBetaPolicySettings, string(data))
 }
 
+// GetOpenAIAutoDisableSettings 获取 OpenAI 自动禁用规则配置。
+func (s *SettingService) GetOpenAIAutoDisableSettings(ctx context.Context) (*OpenAIAutoDisableSettings, error) {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAIAutoDisableSettings)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return DefaultOpenAIAutoDisableSettings(), nil
+		}
+		return nil, fmt.Errorf("get openai auto disable settings: %w", err)
+	}
+	if value == "" {
+		return DefaultOpenAIAutoDisableSettings(), nil
+	}
+
+	var settings OpenAIAutoDisableSettings
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return DefaultOpenAIAutoDisableSettings(), nil
+	}
+
+	normalized, err := normalizeOpenAIAutoDisableSettings(&settings)
+	if err != nil {
+		return DefaultOpenAIAutoDisableSettings(), nil
+	}
+	return normalized, nil
+}
+
+// SetOpenAIAutoDisableSettings 设置 OpenAI 自动禁用规则配置。
+func (s *SettingService) SetOpenAIAutoDisableSettings(ctx context.Context, settings *OpenAIAutoDisableSettings) error {
+	normalized, err := normalizeOpenAIAutoDisableSettings(settings)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(normalized)
+	if err != nil {
+		return fmt.Errorf("marshal openai auto disable settings: %w", err)
+	}
+
+	return s.settingRepo.Set(ctx, SettingKeyOpenAIAutoDisableSettings, string(data))
+}
+
+func normalizeOpenAIAutoDisableSettings(settings *OpenAIAutoDisableSettings) (*OpenAIAutoDisableSettings, error) {
+	if settings == nil {
+		return nil, fmt.Errorf("settings cannot be nil")
+	}
+
+	normalized := &OpenAIAutoDisableSettings{
+		Enabled: settings.Enabled,
+		Rules:   make([]OpenAIAutoDisableRule, 0, len(settings.Rules)),
+	}
+
+	for i, rule := range settings.Rules {
+		var statusCode *int
+		if rule.StatusCode != nil {
+			value := *rule.StatusCode
+			if value < 100 || value > 599 {
+				return nil, fmt.Errorf("rule[%d]: status_code must be between 100 and 599", i)
+			}
+			statusCode = &value
+		}
+
+		keywords := make([]string, 0, len(rule.MessageKeywords))
+		seen := make(map[string]struct{}, len(rule.MessageKeywords))
+		for _, keyword := range rule.MessageKeywords {
+			trimmed := strings.TrimSpace(keyword)
+			if trimmed == "" {
+				continue
+			}
+			lower := strings.ToLower(trimmed)
+			if _, ok := seen[lower]; ok {
+				continue
+			}
+			seen[lower] = struct{}{}
+			keywords = append(keywords, trimmed)
+		}
+
+		if statusCode == nil && len(keywords) == 0 {
+			return nil, fmt.Errorf("rule[%d]: status_code or message_keywords is required", i)
+		}
+
+		normalized.Rules = append(normalized.Rules, OpenAIAutoDisableRule{
+			StatusCode:      statusCode,
+			MessageKeywords: keywords,
+			Description:     strings.TrimSpace(rule.Description),
+		})
+	}
+
+	if normalized.Enabled && len(normalized.Rules) == 0 {
+		return nil, fmt.Errorf("at least one rule is required when enabled")
+	}
+
+	return normalized, nil
+}
+
 // SetStreamTimeoutSettings 设置流超时处理配置
 func (s *SettingService) SetStreamTimeoutSettings(ctx context.Context, settings *StreamTimeoutSettings) error {
 	if settings == nil {

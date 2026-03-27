@@ -254,6 +254,15 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 	return tokenInfo, nil
 }
 
+// RefreshTokenByProxyID refreshes an OpenAI OAuth token using an optional proxy ID.
+func (s *OpenAIOAuthService) RefreshTokenByProxyID(ctx context.Context, refreshToken string, proxyID *int64, clientID string) (*OpenAITokenInfo, error) {
+	proxyURL, err := s.resolveProxyURL(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
+}
+
 // ExchangeSoraSessionToken exchanges Sora session_token to access_token.
 func (s *OpenAIOAuthService) ExchangeSoraSessionToken(ctx context.Context, sessionToken string, proxyID *int64) (*OpenAITokenInfo, error) {
 	sessionToken = normalizeSoraSessionTokenInput(sessionToken)
@@ -531,6 +540,9 @@ func (s *OpenAIOAuthService) Stop() {
 func (s *OpenAIOAuthService) resolveProxyURL(ctx context.Context, proxyID *int64) (string, error) {
 	if proxyID == nil {
 		return "", nil
+	}
+	if s.proxyRepo == nil {
+		return "", infraerrors.New(http.StatusInternalServerError, "OPENAI_OAUTH_PROXY_REPO_UNAVAILABLE", "proxy repository is unavailable")
 	}
 	proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
 	if err != nil {

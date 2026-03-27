@@ -110,6 +110,18 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) (shouldDisable bool) {
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
+	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	if upstreamMsg != "" {
+		upstreamMsg = truncateForLog([]byte(upstreamMsg), 512)
+	}
+
+	if matchedRule, matchedKeyword, matched := s.matchOpenAIAutoDisableRule(ctx, account, statusCode, upstreamMsg, responseBody); matched {
+		msg := s.buildOpenAIAutoDisableMessage(statusCode, upstreamMsg, responseBody, matchedRule, matchedKeyword)
+		s.handleAuthError(ctx, account, msg)
+		return true
+	}
+
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
 
 	// 池模式默认不标记本地账号状态；仅当用户显式配置自定义错误码时按本地策略处理。
@@ -131,12 +143,6 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
 			return true
 		}
-	}
-
-	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
-	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-	if upstreamMsg != "" {
-		upstreamMsg = truncateForLog([]byte(upstreamMsg), 512)
 	}
 
 	switch statusCode {
@@ -614,6 +620,74 @@ func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account
 		return
 	}
 	slog.Warn("account_disabled_auth_error", "account_id", account.ID, "error", errorMsg)
+}
+
+func (s *RateLimitService) matchOpenAIAutoDisableRule(
+	ctx context.Context,
+	account *Account,
+	statusCode int,
+	upstreamMsg string,
+	responseBody []byte,
+) (*OpenAIAutoDisableRule, string, bool) {
+	if s == nil || s.settingService == nil || account == nil || account.Platform != PlatformOpenAI {
+		return nil, "", false
+	}
+
+	settings, err := s.settingService.GetOpenAIAutoDisableSettings(ctx)
+	if err != nil || settings == nil || !settings.Enabled || len(settings.Rules) == 0 {
+		return nil, "", false
+	}
+
+	bodyText := strings.ToLower(string(responseBody))
+	messageText := strings.ToLower(strings.TrimSpace(upstreamMsg))
+
+	for i := range settings.Rules {
+		rule := &settings.Rules[i]
+		if rule == nil {
+			continue
+		}
+		if rule.StatusCode != nil && *rule.StatusCode == statusCode {
+			return rule, "", true
+		}
+		for _, keyword := range rule.MessageKeywords {
+			needle := strings.ToLower(strings.TrimSpace(keyword))
+			if needle == "" {
+				continue
+			}
+			if strings.Contains(bodyText, needle) || (messageText != "" && strings.Contains(messageText, needle)) {
+				return rule, keyword, true
+			}
+		}
+	}
+
+	return nil, "", false
+}
+
+func (s *RateLimitService) buildOpenAIAutoDisableMessage(
+	statusCode int,
+	upstreamMsg string,
+	responseBody []byte,
+	rule *OpenAIAutoDisableRule,
+	matchedKeyword string,
+) string {
+	reason := "OpenAI auto-disable rule matched"
+	switch {
+	case matchedKeyword != "":
+		reason = "OpenAI auto-disable rule matched keyword: " + matchedKeyword
+	case rule != nil && rule.StatusCode != nil:
+		reason = "OpenAI auto-disable rule matched status: " + strconv.Itoa(*rule.StatusCode)
+	case statusCode > 0:
+		reason = "OpenAI auto-disable rule matched status: " + strconv.Itoa(statusCode)
+	}
+
+	rawBody := strings.TrimSpace(truncateForLog(responseBody, 512))
+	if rawBody != "" {
+		return reason + " | raw_response=" + rawBody
+	}
+	if strings.TrimSpace(upstreamMsg) != "" {
+		return reason + " | upstream_message=" + upstreamMsg
+	}
+	return reason
 }
 
 // handle403 处理 403 Forbidden 错误

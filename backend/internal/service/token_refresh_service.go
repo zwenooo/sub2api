@@ -363,9 +363,9 @@ func (s *TokenRefreshService) ensureOpenAIPrivacy(ctx context.Context, account *
 	if s.privacyClientFactory == nil {
 		return
 	}
-	// 已设置过则跳过
+	// 只有明确已关闭训练共享时才跳过；失败/CF 拦截场景允许后续刷新重试。
 	if account.Extra != nil {
-		if _, ok := account.Extra["privacy_mode"]; ok {
+		if mode, _ := account.Extra["privacy_mode"].(string); strings.TrimSpace(mode) == PrivacyModeTrainingOff {
 			return
 		}
 	}

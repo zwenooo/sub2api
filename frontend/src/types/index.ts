@@ -962,6 +962,17 @@ export interface AdminOpenAIAuthImportResult {
   errors?: AdminOpenAIAuthImportError[]
 }
 
+export interface OpenAIAutoDisableRule {
+  status_code?: number | null
+  message_keywords?: string[]
+  description?: string
+}
+
+export interface OpenAIAutoDisableSettings {
+  enabled: boolean
+  rules: OpenAIAutoDisableRule[]
+}
+
 // ==================== Usage & Redeem Types ====================
 
 export type RedeemCodeType = 'balance' | 'concurrency' | 'subscription' | 'invitation'
@@ -1033,6 +1044,11 @@ export interface AdminUsageLog extends UsageLog {
 
   // 用户请求 IP（仅管理员可见）
   ip_address?: string | null
+
+  // 返回给用户的错误体与上游原始错误信息（仅管理员可见）
+  user_visible_error_body?: string | null
+  upstream_error_message?: string | null
+  upstream_error_detail?: string | null
 
   // 最小账号信息（仅管理员接口返回）
   account?: UsageLogAccountSummary

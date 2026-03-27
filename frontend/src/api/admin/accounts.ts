@@ -19,7 +19,8 @@ import type {
   AdminOpenAIAuthImportSource,
   AdminOpenAIAuthImportResult,
   CheckMixedChannelRequest,
-  CheckMixedChannelResponse
+  CheckMixedChannelResponse,
+  OpenAIAutoDisableSettings
 } from '@/types'
 
 /**
@@ -617,6 +618,23 @@ export interface BatchOperationResult {
   warnings?: Array<{ account_id: number; warning: string }>
 }
 
+export async function getOpenAIAutoDisableRules(): Promise<OpenAIAutoDisableSettings> {
+  const { data } = await apiClient.get<OpenAIAutoDisableSettings>(
+    '/admin/accounts/openai-auto-disable-rules'
+  )
+  return data
+}
+
+export async function updateOpenAIAutoDisableRules(
+  payload: OpenAIAutoDisableSettings
+): Promise<OpenAIAutoDisableSettings> {
+  const { data } = await apiClient.put<OpenAIAutoDisableSettings>(
+    '/admin/accounts/openai-auto-disable-rules',
+    payload
+  )
+  return data
+}
+
 /**
  * Batch clear account errors
  * @param accountIds - Array of account IDs
@@ -640,6 +658,17 @@ export async function batchRefresh(accountIds: number[]): Promise<BatchOperation
   }, {
     timeout: 120000  // 120s timeout for large batch refreshes
   })
+  return data
+}
+
+export async function batchRefreshPendingOpenAI(): Promise<BatchOperationResult> {
+  const { data } = await apiClient.post<BatchOperationResult>(
+    '/admin/accounts/batch-refresh-pending-openai',
+    {},
+    {
+      timeout: 120000
+    }
+  )
   return data
 }
 
@@ -681,7 +710,10 @@ export const accountsAPI = {
   importOpenAIAuthFile,
   getAntigravityDefaultModelMapping,
   batchClearError,
-  batchRefresh
+  batchRefresh,
+  getOpenAIAutoDisableRules,
+  updateOpenAIAutoDisableRules,
+  batchRefreshPendingOpenAI
 }
 
 export default accountsAPI

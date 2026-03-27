@@ -28,7 +28,23 @@ import (
 	gocache "github.com/patrickmn/go-cache"
 )
 
-const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, media_type, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, created_at"
+const usageLogSelectColumns = "ul.id, ul.user_id, ul.api_key_id, ul.account_id, ul.request_id, ul.model, ul.group_id, ul.subscription_id, ul.input_tokens, ul.output_tokens, ul.cache_creation_tokens, ul.cache_read_tokens, ul.cache_creation_5m_tokens, ul.cache_creation_1h_tokens, ul.input_cost, ul.output_cost, ul.cache_creation_cost, ul.cache_read_cost, ul.total_cost, ul.actual_cost, ul.rate_multiplier, ul.account_rate_multiplier, ul.billing_type, ul.request_type, ul.stream, ul.openai_ws_mode, ul.duration_ms, ul.first_token_ms, ul.user_agent, ul.ip_address, ul.image_count, ul.image_size, ul.media_type, ul.service_tier, ul.reasoning_effort, ul.inbound_endpoint, ul.upstream_endpoint, ul.cache_ttl_overridden, ul.created_at, oe.error_body, oe.upstream_error_message, COALESCE(NULLIF(oe.upstream_error_detail, ''), NULLIF(NULLIF(oe.upstream_errors, 'null'), ''), NULLIF(oe.upstream_error_message, ''))"
+
+const usageLogSelectFromClause = `FROM usage_logs ul
+LEFT JOIN LATERAL (
+  SELECT
+    COALESCE(e.error_body, '') AS error_body,
+    COALESCE(e.upstream_error_message, '') AS upstream_error_message,
+    COALESCE(e.upstream_error_detail, '') AS upstream_error_detail,
+    COALESCE(e.upstream_errors::text, '') AS upstream_errors
+  FROM ops_error_logs e
+  WHERE NULLIF(BTRIM(ul.request_id), '') IS NOT NULL
+    AND COALESCE(e.status_code, 0) >= 400
+    AND (NULLIF(e.request_id, '') = ul.request_id OR NULLIF(e.client_request_id, '') = ul.request_id)
+    AND (e.account_id = ul.account_id OR e.account_id IS NULL)
+  ORDER BY e.created_at DESC
+  LIMIT 1
+) oe ON TRUE`
 
 var usageLogInsertArgTypes = [...]string{
 	"bigint",
@@ -1198,7 +1214,7 @@ func (r *usageLogRepository) bestEffortRecentKey(requestID string, apiKeyID int6
 }
 
 func (r *usageLogRepository) GetByID(ctx context.Context, id int64) (log *service.UsageLog, err error) {
-	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE id = $1"
+	query := "SELECT " + usageLogSelectColumns + " " + usageLogSelectFromClause + " WHERE ul.id = $1"
 	rows, err := r.sql.QueryContext(ctx, query, id)
 	if err != nil {
 		return nil, err
@@ -1568,7 +1584,7 @@ func (r *usageLogRepository) ListByAccount(ctx context.Context, accountID int64,
 }
 
 func (r *usageLogRepository) ListByUserAndTimeRange(ctx context.Context, userID int64, startTime, endTime time.Time) ([]service.UsageLog, *pagination.PaginationResult, error) {
-	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE user_id = $1 AND created_at >= $2 AND created_at < $3 ORDER BY id DESC LIMIT 10000"
+	query := "SELECT " + usageLogSelectColumns + " " + usageLogSelectFromClause + " WHERE ul.user_id = $1 AND ul.created_at >= $2 AND ul.created_at < $3 ORDER BY ul.id DESC LIMIT 10000"
 	logs, err := r.queryUsageLogs(ctx, query, userID, startTime, endTime)
 	return logs, nil, err
 }
@@ -1814,19 +1830,19 @@ func resolveUsageStatsTimezone() string {
 }
 
 func (r *usageLogRepository) ListByAPIKeyAndTimeRange(ctx context.Context, apiKeyID int64, startTime, endTime time.Time) ([]service.UsageLog, *pagination.PaginationResult, error) {
-	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE api_key_id = $1 AND created_at >= $2 AND created_at < $3 ORDER BY id DESC LIMIT 10000"
+	query := "SELECT " + usageLogSelectColumns + " " + usageLogSelectFromClause + " WHERE ul.api_key_id = $1 AND ul.created_at >= $2 AND ul.created_at < $3 ORDER BY ul.id DESC LIMIT 10000"
 	logs, err := r.queryUsageLogs(ctx, query, apiKeyID, startTime, endTime)
 	return logs, nil, err
 }
 
 func (r *usageLogRepository) ListByAccountAndTimeRange(ctx context.Context, accountID int64, startTime, endTime time.Time) ([]service.UsageLog, *pagination.PaginationResult, error) {
-	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE account_id = $1 AND created_at >= $2 AND created_at < $3 ORDER BY id DESC LIMIT 10000"
+	query := "SELECT " + usageLogSelectColumns + " " + usageLogSelectFromClause + " WHERE ul.account_id = $1 AND ul.created_at >= $2 AND ul.created_at < $3 ORDER BY ul.id DESC LIMIT 10000"
 	logs, err := r.queryUsageLogs(ctx, query, accountID, startTime, endTime)
 	return logs, nil, err
 }
 
 func (r *usageLogRepository) ListByModelAndTimeRange(ctx context.Context, modelName string, startTime, endTime time.Time) ([]service.UsageLog, *pagination.PaginationResult, error) {
-	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE model = $1 AND created_at >= $2 AND created_at < $3 ORDER BY id DESC LIMIT 10000"
+	query := "SELECT " + usageLogSelectColumns + " " + usageLogSelectFromClause + " WHERE ul.model = $1 AND ul.created_at >= $2 AND ul.created_at < $3 ORDER BY ul.id DESC LIMIT 10000"
 	logs, err := r.queryUsageLogs(ctx, query, modelName, startTime, endTime)
 	return logs, nil, err
 }
@@ -3493,7 +3509,7 @@ func (r *usageLogRepository) listUsageLogsWithPagination(ctx context.Context, wh
 	limitPos := len(args) + 1
 	offsetPos := len(args) + 2
 	listArgs := append(append([]any{}, args...), params.Limit(), params.Offset())
-	query := fmt.Sprintf("SELECT %s FROM usage_logs %s ORDER BY id DESC LIMIT $%d OFFSET $%d", usageLogSelectColumns, whereClause, limitPos, offsetPos)
+	query := fmt.Sprintf("SELECT %s %s %s ORDER BY ul.id DESC LIMIT $%d OFFSET $%d", usageLogSelectColumns, usageLogSelectFromClause, whereClause, limitPos, offsetPos)
 	logs, err := r.queryUsageLogs(ctx, query, listArgs...)
 	if err != nil {
 		return nil, nil, err
@@ -3508,7 +3524,7 @@ func (r *usageLogRepository) listUsageLogsWithFastPagination(ctx context.Context
 	limitPos := len(args) + 1
 	offsetPos := len(args) + 2
 	listArgs := append(append([]any{}, args...), limit+1, offset)
-	query := fmt.Sprintf("SELECT %s FROM usage_logs %s ORDER BY id DESC LIMIT $%d OFFSET $%d", usageLogSelectColumns, whereClause, limitPos, offsetPos)
+	query := fmt.Sprintf("SELECT %s %s %s ORDER BY ul.id DESC LIMIT $%d OFFSET $%d", usageLogSelectColumns, usageLogSelectFromClause, whereClause, limitPos, offsetPos)
 
 	logs, err := r.queryUsageLogs(ctx, query, listArgs...)
 	if err != nil {
@@ -3765,6 +3781,9 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		upstreamEndpoint      sql.NullString
 		cacheTTLOverridden    bool
 		createdAt             time.Time
+		userVisibleErrorBody  sql.NullString
+		upstreamErrorMessage  sql.NullString
+		upstreamErrorDetail   sql.NullString
 	)
 
 	if err := scanner.Scan(
@@ -3807,6 +3826,9 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		&upstreamEndpoint,
 		&cacheTTLOverridden,
 		&createdAt,
+		&userVisibleErrorBody,
+		&upstreamErrorMessage,
+		&upstreamErrorDetail,
 	); err != nil {
 		return nil, err
 	}
@@ -3885,6 +3907,15 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	}
 	if upstreamEndpoint.Valid {
 		log.UpstreamEndpoint = &upstreamEndpoint.String
+	}
+	if userVisibleErrorBody.Valid && strings.TrimSpace(userVisibleErrorBody.String) != "" {
+		log.UserVisibleErrorBody = &userVisibleErrorBody.String
+	}
+	if upstreamErrorMessage.Valid && strings.TrimSpace(upstreamErrorMessage.String) != "" {
+		log.UpstreamErrorMessage = &upstreamErrorMessage.String
+	}
+	if upstreamErrorDetail.Valid && strings.TrimSpace(upstreamErrorDetail.String) != "" {
+		log.UpstreamErrorDetail = &upstreamErrorDetail.String
 	}
 
 	return log, nil

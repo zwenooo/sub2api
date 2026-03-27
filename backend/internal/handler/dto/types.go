@@ -376,6 +376,11 @@ type UsageLog struct {
 	// User-Agent
 	UserAgent *string `json:"user_agent"`
 
+	// Correlated error details (from ops_error_logs when request_id matches)
+	UserVisibleErrorBody *string `json:"user_visible_error_body,omitempty"`
+	UpstreamErrorMessage *string `json:"upstream_error_message,omitempty"`
+	UpstreamErrorDetail  *string `json:"upstream_error_detail,omitempty"`
+
 	// Cache TTL Override 标记
 	CacheTTLOverridden bool `json:"cache_ttl_overridden"`
 

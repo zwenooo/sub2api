@@ -57,6 +57,7 @@ type AccountHandler struct {
 	sessionLimitCache       service.SessionLimitCache
 	rpmCache                service.RPMCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
+	settingService          *service.SettingService
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -74,6 +75,7 @@ func NewAccountHandler(
 	sessionLimitCache service.SessionLimitCache,
 	rpmCache service.RPMCache,
 	tokenCacheInvalidator service.TokenCacheInvalidator,
+	settingService *service.SettingService,
 ) *AccountHandler {
 	return &AccountHandler{
 		adminService:            adminService,
@@ -89,6 +91,7 @@ func NewAccountHandler(
 		sessionLimitCache:       sessionLimitCache,
 		rpmCache:                rpmCache,
 		tokenCacheInvalidator:   tokenCacheInvalidator,
+		settingService:          settingService,
 	}
 }
 
@@ -1121,6 +1124,156 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 		"errors":   errors,
 		"warnings": warnings,
 	})
+}
+
+// GetOpenAIAutoDisableRules handles fetching OpenAI auto-disable rules.
+// GET /api/v1/admin/accounts/openai-auto-disable-rules
+func (h *AccountHandler) GetOpenAIAutoDisableRules(c *gin.Context) {
+	if h.settingService == nil {
+		response.InternalError(c, "Setting service not available")
+		return
+	}
+
+	settings, err := h.settingService.GetOpenAIAutoDisableSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, settings)
+}
+
+// UpdateOpenAIAutoDisableRules handles updating OpenAI auto-disable rules.
+// PUT /api/v1/admin/accounts/openai-auto-disable-rules
+func (h *AccountHandler) UpdateOpenAIAutoDisableRules(c *gin.Context) {
+	if h.settingService == nil {
+		response.InternalError(c, "Setting service not available")
+		return
+	}
+
+	var req service.OpenAIAutoDisableSettings
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	if err := h.settingService.SetOpenAIAutoDisableSettings(c.Request.Context(), &req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	settings, err := h.settingService.GetOpenAIAutoDisableSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, settings)
+}
+
+// BatchRefreshPendingOpenAI handles refreshing OpenAI OAuth accounts whose plan/privacy info is incomplete.
+// POST /api/v1/admin/accounts/batch-refresh-pending-openai
+func (h *AccountHandler) BatchRefreshPendingOpenAI(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	accounts := make([]*service.Account, 0, len(allAccounts))
+	for i := range allAccounts {
+		account := &allAccounts[i]
+		if shouldBatchRefreshPendingOpenAI(account) {
+			accounts = append(accounts, account)
+		}
+	}
+
+	if len(accounts) == 0 {
+		response.Success(c, gin.H{
+			"total":    0,
+			"success":  0,
+			"failed":   0,
+			"errors":   []gin.H{},
+			"warnings": []gin.H{},
+		})
+		return
+	}
+
+	const maxConcurrency = 10
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxConcurrency)
+
+	var mu sync.Mutex
+	var successCount, failedCount int
+	errorsList := make([]gin.H, 0)
+	warnings := make([]gin.H, 0)
+
+	for _, account := range accounts {
+		acc := account
+		g.Go(func() error {
+			_, warning, err := h.refreshSingleAccount(gctx, acc)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failedCount++
+				errorsList = append(errorsList, gin.H{
+					"account_id": acc.ID,
+					"error":      err.Error(),
+				})
+				return nil
+			}
+			successCount++
+			if warning != "" {
+				warnings = append(warnings, gin.H{
+					"account_id": acc.ID,
+					"warning":    warning,
+				})
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, gin.H{
+		"total":    len(accounts),
+		"success":  successCount,
+		"failed":   failedCount,
+		"errors":   errorsList,
+		"warnings": warnings,
+	})
+}
+
+func shouldBatchRefreshPendingOpenAI(account *service.Account) bool {
+	if account == nil || account.Platform != service.PlatformOpenAI || account.Type != service.AccountTypeOAuth {
+		return false
+	}
+	if strings.TrimSpace(account.GetCredential("refresh_token")) == "" {
+		return false
+	}
+
+	planType := strings.ToLower(strings.TrimSpace(account.GetCredential("plan_type")))
+	if planType == "" {
+		return true
+	}
+
+	if planType != "free" {
+		return false
+	}
+
+	privacyMode := ""
+	if account.Extra != nil {
+		if value, ok := account.Extra["privacy_mode"].(string); ok {
+			privacyMode = strings.TrimSpace(value)
+		}
+	}
+
+	return privacyMode != service.PrivacyModeTrainingOff
 }
 
 // BatchCreate handles batch creating accounts

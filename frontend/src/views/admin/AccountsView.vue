@@ -67,10 +67,40 @@
               <button
                 @click="showAccountRules = true"
                 class="btn btn-secondary"
-                title="账号规则管理"
+                :title="t('admin.accounts.accountRuleManager')"
               >
                 <Icon name="shield" size="md" class="mr-1.5" />
-                <span class="hidden md:inline">规则管理</span>
+                <span class="hidden md:inline">{{ t('admin.accounts.accountRuleManager') }}</span>
+              </button>
+
+              <button
+                @click="showOpenAIAutoDisableRules = true"
+                class="btn btn-secondary"
+                :title="t('admin.accounts.openAIAutoDisableRules')"
+              >
+                <Icon name="shield" size="md" class="mr-1.5" />
+                <span class="hidden md:inline">{{ t('admin.accounts.openAIAutoDisableRules') }}</span>
+              </button>
+
+              <button
+                @click="handleBatchRefreshPendingOpenAI"
+                class="btn btn-secondary"
+                :disabled="batchRefreshingPendingOpenAI"
+                :title="t('admin.accounts.batchRefreshPendingOpenAIHint')"
+              >
+                <Icon
+                  name="refresh"
+                  size="md"
+                  class="mr-1.5"
+                  :class="{ 'animate-spin': batchRefreshingPendingOpenAI }"
+                />
+                <span class="hidden md:inline">
+                  {{
+                    batchRefreshingPendingOpenAI
+                      ? t('admin.accounts.batchRefreshPendingOpenAIRefreshing')
+                      : t('admin.accounts.batchRefreshPendingOpenAI')
+                  }}
+                </span>
               </button>
 
               <!-- Column Settings Dropdown -->
@@ -134,7 +164,7 @@
         </div>
       </template>
       <template #table>
-        <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
+        <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @refresh-pending-openai="handleBatchRefreshPendingOpenAI" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
           :columns="cols"
@@ -294,6 +324,10 @@
       @close="closeAccountRuleManager"
       @updated="reload"
     />
+    <OpenAIAutoDisableRulesModal
+      :show="showOpenAIAutoDisableRules"
+      @close="showOpenAIAutoDisableRules = false"
+    />
   </AppLayout>
 </template>
 
@@ -320,6 +354,7 @@ import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActions
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportOpenAIAuthModal from '@/components/admin/account/ImportOpenAIAuthModal.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
+import OpenAIAutoDisableRulesModal from '@/components/admin/account/OpenAIAutoDisableRulesModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
 import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
@@ -376,6 +411,7 @@ const showReAuth = ref(false)
 const showTest = ref(false)
 const showStats = ref(false)
 const showAccountRules = ref(false)
+const showOpenAIAutoDisableRules = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
@@ -388,6 +424,7 @@ const scheduleModelOptions = ref<SelectOption[]>([])
 const togglingSchedulable = ref<number | null>(null)
 const menu = reactive<{show:boolean, acc:Account|null, pos:{top:number, left:number}|null}>({ show: false, acc: null, pos: null })
 const exportingData = ref(false)
+const batchRefreshingPendingOpenAI = ref(false)
 
 // Column settings
 const showColumnDropdown = ref(false)
@@ -694,7 +731,8 @@ const isAnyModalOpen = computed(() => {
     showTest.value ||
     showStats.value ||
     showSchedulePanel.value ||
-    showAccountRules.value
+    showAccountRules.value ||
+    showOpenAIAutoDisableRules.value
   )
 })
 
@@ -1012,6 +1050,40 @@ const handleBulkRefreshToken = async () => {
   } catch (error) {
     console.error('Failed to bulk refresh token:', error)
     appStore.showError(String(error))
+  }
+}
+const handleBatchRefreshPendingOpenAI = async () => {
+  if (batchRefreshingPendingOpenAI.value) return
+  if (!confirm(t('admin.accounts.batchRefreshPendingOpenAIConfirm'))) return
+
+  batchRefreshingPendingOpenAI.value = true
+  try {
+    const result = await adminAPI.accounts.batchRefreshPendingOpenAI()
+    if (result.total === 0) {
+      appStore.showInfo(t('admin.accounts.batchRefreshPendingOpenAINone'))
+      return
+    }
+
+    if (result.failed > 0 && result.success > 0) {
+      appStore.showWarning(
+        t('admin.accounts.batchRefreshPendingOpenAIPartial', {
+          success: result.success,
+          failed: result.failed
+        })
+      )
+    } else if (result.failed > 0) {
+      appStore.showError(t('admin.accounts.batchRefreshPendingOpenAIFailed'))
+    } else {
+      appStore.showSuccess(
+        t('admin.accounts.batchRefreshPendingOpenAISuccess', { count: result.success })
+      )
+    }
+    reload()
+  } catch (error: any) {
+    console.error('Failed to batch refresh pending OpenAI accounts:', error)
+    appStore.showError(error?.message || t('admin.accounts.batchRefreshPendingOpenAIFailed'))
+  } finally {
+    batchRefreshingPendingOpenAI.value = false
   }
 }
 const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => {

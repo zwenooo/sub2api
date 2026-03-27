@@ -139,6 +139,24 @@
           <span class="text-sm text-gray-600 dark:text-gray-400">{{ formatDuration(row.duration_ms) }}</span>
         </template>
 
+        <template #cell-error_detail="{ row }">
+          <div v-if="hasErrorDetail(row)" class="max-w-[420px] space-y-2 whitespace-normal">
+            <div v-if="getUpstreamErrorText(row)" class="space-y-1">
+              <div class="text-[11px] font-medium uppercase tracking-wide text-rose-600 dark:text-rose-300">
+                {{ t('admin.usage.upstreamErrorDetail') }}
+              </div>
+              <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:bg-rose-900/20 dark:text-rose-200">{{ getUpstreamErrorText(row) }}</pre>
+            </div>
+            <div v-if="getUserVisibleErrorText(row)" class="space-y-1">
+              <div class="text-[11px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                {{ t('admin.usage.userVisibleErrorBody') }}
+              </div>
+              <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700 dark:bg-amber-900/20 dark:text-amber-200">{{ getUserVisibleErrorText(row) }}</pre>
+            </div>
+          </div>
+          <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
+        </template>
+
         <template #cell-created_at="{ value }">
           <span class="text-sm text-gray-600 dark:text-gray-400">{{ formatDateTime(value) }}</span>
         </template>
@@ -356,6 +374,26 @@ const formatDuration = (ms: number | null | undefined): string => {
   if (ms == null) return '-'
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(2)}s`
+}
+
+const normalizeErrorText = (value: string | null | undefined): string => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const lower = text.toLowerCase()
+  if (lower === 'null' || text === '{}' || text === '[]') return ''
+  return text
+}
+
+const getUpstreamErrorText = (row: AdminUsageLog): string => {
+  return normalizeErrorText(row.upstream_error_detail) || normalizeErrorText(row.upstream_error_message)
+}
+
+const getUserVisibleErrorText = (row: AdminUsageLog): string => {
+  return normalizeErrorText(row.user_visible_error_body)
+}
+
+const hasErrorDetail = (row: AdminUsageLog): boolean => {
+  return !!(getUpstreamErrorText(row) || getUserVisibleErrorText(row))
 }
 
 // Cost tooltip functions

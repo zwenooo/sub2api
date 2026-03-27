@@ -108,6 +108,12 @@ type UsageLog struct {
 	InboundEndpoint *string
 	// UpstreamEndpoint is the normalized upstream endpoint path, e.g. /v1/responses.
 	UpstreamEndpoint *string
+	// UserVisibleErrorBody is the exact error body returned to the client, correlated from ops_error_logs.
+	UserVisibleErrorBody *string
+	// UpstreamErrorMessage is the extracted upstream error message, correlated from ops_error_logs.
+	UpstreamErrorMessage *string
+	// UpstreamErrorDetail is the raw upstream error payload/body snippet, correlated from ops_error_logs.
+	UpstreamErrorDetail *string
 
 	GroupID        *int64
 	SubscriptionID *int64

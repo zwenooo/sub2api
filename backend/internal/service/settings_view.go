@@ -222,6 +222,28 @@ type BetaPolicySettings struct {
 	Rules []BetaPolicyRule `json:"rules"`
 }
 
+// OpenAIAutoDisableRule OpenAI 上游错误自动禁用规则。
+// 命中条件为“状态码匹配”或“原始响应体/错误消息包含任一关键词”。
+type OpenAIAutoDisableRule struct {
+	StatusCode      *int     `json:"status_code,omitempty"`
+	MessageKeywords []string `json:"message_keywords,omitempty"`
+	Description     string   `json:"description,omitempty"`
+}
+
+// OpenAIAutoDisableSettings OpenAI 自动禁用规则配置。
+type OpenAIAutoDisableSettings struct {
+	Enabled bool                    `json:"enabled"`
+	Rules   []OpenAIAutoDisableRule `json:"rules"`
+}
+
+// DefaultOpenAIAutoDisableSettings 返回默认的 OpenAI 自动禁用规则配置。
+func DefaultOpenAIAutoDisableSettings() *OpenAIAutoDisableSettings {
+	return &OpenAIAutoDisableSettings{
+		Enabled: false,
+		Rules:   []OpenAIAutoDisableRule{},
+	}
+}
+
 // DefaultBetaPolicySettings 返回默认的 Beta 策略配置
 func DefaultBetaPolicySettings() *BetaPolicySettings {
 	return &BetaPolicySettings{
