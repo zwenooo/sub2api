@@ -958,6 +958,40 @@ func TestGatewayService_SelectAccountForModelWithPlatform_GeminiAPIKeyModelMappi
 	require.Contains(t, err.Error(), "supporting model")
 }
 
+func TestGatewayService_SelectAccountForModelWithExclusions_SkipsFreshlyErroredSnapshotCandidate(t *testing.T) {
+	ctx := context.Background()
+	stalePrimary := &Account{ID: 41001, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 1}
+	staleSecondary := &Account{ID: 41002, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 2}
+	freshPrimary := &Account{ID: 41001, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusError, Schedulable: true, Priority: 1}
+	freshSecondary := &Account{ID: 41002, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Priority: 2}
+
+	snapshotCache := &openAISnapshotCacheStub{
+		snapshotAccounts: []*Account{stalePrimary, staleSecondary},
+		accountsByID: map[int64]*Account{
+			41001: freshPrimary,
+			41002: freshSecondary,
+		},
+	}
+	snapshotService := &SchedulerSnapshotService{cache: snapshotCache}
+
+	repo := &mockAccountRepoForPlatform{
+		accounts:     []Account{*freshPrimary, *freshSecondary},
+		accountsByID: map[int64]*Account{41001: freshPrimary, 41002: freshSecondary},
+	}
+
+	svc := &GatewayService{
+		accountRepo:       repo,
+		cache:             &mockGatewayCacheForPlatform{},
+		cfg:               testConfig(),
+		schedulerSnapshot: snapshotService,
+	}
+
+	account, err := svc.SelectAccountForModelWithExclusions(ctx, nil, "", "claude-3-5-sonnet-20241022", nil)
+	require.NoError(t, err)
+	require.NotNil(t, account)
+	require.Equal(t, int64(41002), account.ID)
+}
+
 func TestGatewayService_SelectAccountForModelWithPlatform_StickyInGroup(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(50)
@@ -2036,6 +2070,45 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.NotNil(t, result)
 		require.NotNil(t, result.Account)
 		require.Equal(t, int64(1), result.Account.ID, "应选择优先级最高的账号")
+	})
+
+	t.Run("桶快照旧但单账号快照已error时跳过该账号", func(t *testing.T) {
+		stalePrimary := &Account{ID: 42001, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 5, Priority: 1}
+		staleSecondary := &Account{ID: 42002, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 5, Priority: 2}
+		freshPrimary := &Account{ID: 42001, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusError, Schedulable: true, Concurrency: 5, Priority: 1}
+		freshSecondary := &Account{ID: 42002, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 5, Priority: 2}
+
+		snapshotCache := &openAISnapshotCacheStub{
+			snapshotAccounts: []*Account{stalePrimary, staleSecondary},
+			accountsByID: map[int64]*Account{
+				42001: freshPrimary,
+				42002: freshSecondary,
+			},
+		}
+		snapshotService := &SchedulerSnapshotService{cache: snapshotCache}
+
+		repo := &mockAccountRepoForPlatform{
+			accounts:     []Account{*freshPrimary, *freshSecondary},
+			accountsByID: map[int64]*Account{42001: freshPrimary, 42002: freshSecondary},
+		}
+
+		cfg := testConfig()
+		cfg.Gateway.Scheduling.LoadBatchEnabled = true
+		concurrencyCache := &mockConcurrencyCache{}
+
+		svc := &GatewayService{
+			accountRepo:        repo,
+			cache:              &mockGatewayCacheForPlatform{},
+			cfg:                cfg,
+			schedulerSnapshot:  snapshotService,
+			concurrencyService: NewConcurrencyService(concurrencyCache),
+		}
+
+		result, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, "")
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.Account)
+		require.Equal(t, int64(42002), result.Account.ID)
 	})
 
 	t.Run("模型路由-无ConcurrencyService也生效", func(t *testing.T) {

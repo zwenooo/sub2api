@@ -1265,12 +1265,13 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				continue
 			}
 			account, ok := accountByID[routingAccountID]
-			if !ok || !s.isAccountSchedulableForSelection(account) {
-				if !ok {
-					filteredMissing++
-				} else {
-					filteredUnsched++
-				}
+			if !ok {
+				filteredMissing++
+				continue
+			}
+			account = s.resolveFreshAccountForSelection(ctx, account)
+			if !s.isAccountSchedulableForSelection(account) {
+				filteredUnsched++
 				continue
 			}
 			if !s.isAccountAllowedForPlatform(account, platform, useMixed) {
@@ -1318,6 +1319,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				if containsInt64(routingAccountIDs, stickyAccountID) && !isExcluded(stickyAccountID) {
 					// 粘性账号在路由列表中，优先使用
 					if stickyAccount, ok := accountByID[stickyAccountID]; ok {
+						stickyAccount = s.resolveFreshAccountForSelection(ctx, stickyAccount)
 						if s.isAccountSchedulableForSelection(stickyAccount) &&
 							s.isAccountAllowedForPlatform(stickyAccount, platform, useMixed) &&
 							(requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, stickyAccount, requestedModel)) &&
@@ -1525,7 +1527,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	// ============ Layer 2: 负载感知选择 ============
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
-		acc := &accounts[i]
+		acc := s.resolveFreshAccountForSelection(ctx, &accounts[i])
+		if acc == nil {
+			continue
+		}
 		if isExcluded(acc.ID) {
 			continue
 		}
@@ -2369,6 +2374,20 @@ func (s *GatewayService) getSchedulableAccount(ctx context.Context, accountID in
 	return s.accountRepo.GetByID(ctx, accountID)
 }
 
+func (s *GatewayService) resolveFreshAccountForSelection(ctx context.Context, account *Account) *Account {
+	if account == nil {
+		return nil
+	}
+	if s.schedulerSnapshot == nil {
+		return account
+	}
+	fresh, err := s.getSchedulableAccount(ctx, account.ID)
+	if err != nil || fresh == nil {
+		return nil
+	}
+	return fresh
+}
+
 // filterByMinPriority 过滤出优先级最小的账号集合
 func filterByMinPriority(accounts []accountWithLoad) []accountWithLoad {
 	if len(accounts) == 0 {
@@ -2703,7 +2722,10 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 		var selected *Account
 		for i := range accounts {
-			acc := &accounts[i]
+			acc := s.resolveFreshAccountForSelection(ctx, &accounts[i])
+			if acc == nil {
+				continue
+			}
 			if _, ok := routingSet[acc.ID]; !ok {
 				continue
 			}
@@ -2808,7 +2830,10 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	// 3. 按优先级+最久未用选择（考虑模型支持）
 	var selected *Account
 	for i := range accounts {
-		acc := &accounts[i]
+		acc := s.resolveFreshAccountForSelection(ctx, &accounts[i])
+		if acc == nil {
+			continue
+		}
 		if _, excluded := excludedIDs[acc.ID]; excluded {
 			continue
 		}
@@ -2935,7 +2960,10 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 		var selected *Account
 		for i := range accounts {
-			acc := &accounts[i]
+			acc := s.resolveFreshAccountForSelection(ctx, &accounts[i])
+			if acc == nil {
+				continue
+			}
 			if _, ok := routingSet[acc.ID]; !ok {
 				continue
 			}
@@ -3042,7 +3070,10 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	// 3. 按优先级+最久未用选择（考虑模型支持和混合调度）
 	var selected *Account
 	for i := range accounts {
-		acc := &accounts[i]
+		acc := s.resolveFreshAccountForSelection(ctx, &accounts[i])
+		if acc == nil {
+			continue
+		}
 		if _, excluded := excludedIDs[acc.ID]; excluded {
 			continue
 		}

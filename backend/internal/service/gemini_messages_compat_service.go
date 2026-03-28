@@ -322,7 +322,10 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	precheckResult := s.buildPreCheckUsageResultMap(ctx, accounts, requestedModel)
 
 	for i := range accounts {
-		acc := &accounts[i]
+		acc := s.resolveFreshAccountForSelection(ctx, &accounts[i])
+		if acc == nil {
+			continue
+		}
 
 		// 跳过被排除的账号
 		if _, excluded := excludedIDs[acc.ID]; excluded {
@@ -429,6 +432,20 @@ func (s *GeminiMessagesCompatService) getSchedulableAccount(ctx context.Context,
 	return s.accountRepo.GetByID(ctx, accountID)
 }
 
+func (s *GeminiMessagesCompatService) resolveFreshAccountForSelection(ctx context.Context, account *Account) *Account {
+	if account == nil {
+		return nil
+	}
+	if s.schedulerSnapshot == nil {
+		return account
+	}
+	fresh, err := s.getSchedulableAccount(ctx, account.ID)
+	if err != nil || fresh == nil {
+		return nil
+	}
+	return fresh
+}
+
 func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, error) {
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
@@ -521,7 +538,10 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 
 	var selected *Account
 	for i := range accounts {
-		acc := &accounts[i]
+		acc := s.resolveFreshAccountForSelection(ctx, &accounts[i])
+		if acc == nil {
+			continue
+		}
 		if selected == nil {
 			selected = acc
 			continue

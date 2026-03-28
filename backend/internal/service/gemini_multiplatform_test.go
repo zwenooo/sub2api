@@ -459,6 +459,41 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_OAuthPr
 	require.Equal(t, AccountTypeOAuth, acc.Type)
 }
 
+func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_SkipsFreshlyErroredSnapshotCandidate(t *testing.T) {
+	ctx := context.Background()
+
+	stalePrimary := &Account{ID: 51001, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 1, Status: StatusActive, Schedulable: true}
+	staleSecondary := &Account{ID: 51002, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 2, Status: StatusActive, Schedulable: true}
+	freshPrimary := &Account{ID: 51001, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 1, Status: StatusError, Schedulable: true}
+	freshSecondary := &Account{ID: 51002, Platform: PlatformGemini, Type: AccountTypeOAuth, Priority: 2, Status: StatusActive, Schedulable: true}
+
+	snapshotCache := &openAISnapshotCacheStub{
+		snapshotAccounts: []*Account{stalePrimary, staleSecondary},
+		accountsByID: map[int64]*Account{
+			51001: freshPrimary,
+			51002: freshSecondary,
+		},
+	}
+	snapshotService := &SchedulerSnapshotService{cache: snapshotCache}
+
+	repo := &mockAccountRepoForGemini{
+		accounts:     []Account{*freshPrimary, *freshSecondary},
+		accountsByID: map[int64]*Account{51001: freshPrimary, 51002: freshSecondary},
+	}
+
+	svc := &GeminiMessagesCompatService{
+		accountRepo:       repo,
+		groupRepo:         &mockGroupRepoForGemini{groups: map[int64]*Group{}},
+		cache:             &mockGatewayCacheForGemini{},
+		schedulerSnapshot: snapshotService,
+	}
+
+	acc, err := svc.SelectAccountForModelWithExclusions(ctx, nil, "", "gemini-2.5-flash", nil)
+	require.NoError(t, err)
+	require.NotNil(t, acc)
+	require.Equal(t, int64(51002), acc.ID)
+}
+
 // TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_NoAvailableAccounts 测试无可用账户
 func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_NoAvailableAccounts(t *testing.T) {
 	ctx := context.Background()
