@@ -128,37 +128,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
-		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
-			upstreamDetail := ""
-			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
-				if maxBytes <= 0 {
-					maxBytes = 2048
-				}
-				upstreamDetail = truncateString(string(respBody), maxBytes)
-			}
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: resp.StatusCode,
-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				Kind:               "failover",
-				Message:            upstreamMsg,
-				Detail:             upstreamDetail,
-			})
-			if s.rateLimitService != nil {
-				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
-			}
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
-			}
-		}
-		return s.handleChatCompletionsErrorResponse(resp, c, account)
+		return s.handleCompatUpstreamErrorWithFailover(
+			ctx,
+			resp,
+			c,
+			account,
+			respBody,
+			s.handleChatCompletionsErrorResponse,
+		)
 	}
 
 	// 9. Handle normal response

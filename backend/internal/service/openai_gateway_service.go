@@ -1638,6 +1638,114 @@ func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, re
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 }
 
+func (s *OpenAIGatewayService) runtimeAccountRuleService(c *gin.Context) *AccountRuleService {
+	if svc := getBoundAccountRuleService(c); svc != nil {
+		return svc
+	}
+	if s == nil {
+		return nil
+	}
+	return s.accountRuleService
+}
+
+func (s *OpenAIGatewayService) matchRuntimeAccountRule(c *gin.Context, account *Account, statusCode int, responseBody []byte) *AccountRuleMatch {
+	svc := s.runtimeAccountRuleService(c)
+	if svc == nil || account == nil {
+		return nil
+	}
+	return svc.MatchRuntimeRule(account, statusCode, responseBody)
+}
+
+func (s *OpenAIGatewayService) applyRuntimeAccountRule(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	statusCode int,
+	headers http.Header,
+	responseBody []byte,
+) AccountRuleActionResult {
+	result := AccountRuleActionResult{}
+
+	svc := s.runtimeAccountRuleService(c)
+	if svc == nil || account == nil {
+		return result
+	}
+
+	match := svc.MatchRuntimeRule(account, statusCode, responseBody)
+	if match == nil {
+		return result
+	}
+
+	result = svc.ApplyMatchedRule(ctx, account, match, statusCode, headers, responseBody)
+	if result.SkipMonitoring && c != nil {
+		c.Set(OpsSkipPassthroughKey, true)
+	}
+	return result
+}
+
+type openAICompatErrorHandler func(resp *http.Response, c *gin.Context, account *Account) (*OpenAIForwardResult, error)
+
+func (s *OpenAIGatewayService) handleCompatUpstreamErrorWithFailover(
+	ctx context.Context,
+	resp *http.Response,
+	c *gin.Context,
+	account *Account,
+	respBody []byte,
+	handleNonFailover openAICompatErrorHandler,
+) (*OpenAIForwardResult, error) {
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+	scopedRuleMatched := false
+	scopedRuleWantsFailover := false
+	if match := s.matchRuntimeAccountRule(c, account, resp.StatusCode, respBody); match != nil && match.Rule != nil {
+		scopedRuleMatched = true
+		scopedRuleWantsFailover = match.Rule.ActionFailover
+	}
+
+	if scopedRuleMatched && !scopedRuleWantsFailover {
+		return handleNonFailover(resp, c, account)
+	}
+
+	if scopedRuleWantsFailover || s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+		upstreamDetail := ""
+		if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+			maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+			if maxBytes <= 0 {
+				maxBytes = 2048
+			}
+			upstreamDetail = truncateString(string(respBody), maxBytes)
+		}
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Kind:               "failover",
+			Message:            upstreamMsg,
+			Detail:             upstreamDetail,
+		})
+
+		maxSwitchesOverride := 0
+		if scopedRuleWantsFailover {
+			result := s.applyRuntimeAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+			maxSwitchesOverride = result.MaxForwardAttempts
+		} else if s.rateLimitService != nil {
+			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		}
+
+		return nil, &UpstreamFailoverError{
+			StatusCode:             resp.StatusCode,
+			ResponseBody:           respBody,
+			RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+			MaxSwitchesOverride:    maxSwitchesOverride,
+		}
+	}
+
+	return handleNonFailover(resp, c, account)
+}
+
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
@@ -2199,11 +2307,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			scopedRuleMatched := false
 			scopedRuleWantsFailover := false
-			if s.accountRuleService != nil {
-				if match := s.accountRuleService.MatchRuntimeRule(account, resp.StatusCode, respBody); match != nil && match.Rule != nil {
-					scopedRuleMatched = true
-					scopedRuleWantsFailover = match.Rule.ActionFailover
-				}
+			if match := s.matchRuntimeAccountRule(c, account, resp.StatusCode, respBody); match != nil && match.Rule != nil {
+				scopedRuleMatched = true
+				scopedRuleWantsFailover = match.Rule.ActionFailover
 			}
 			if scopedRuleMatched && !scopedRuleWantsFailover {
 				return s.handleErrorResponse(ctx, resp, c, account, body)
@@ -2230,7 +2336,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 				maxSwitchesOverride := 0
 				if scopedRuleWantsFailover {
-					result := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+					result := s.applyRuntimeAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
 					maxSwitchesOverride = result.MaxForwardAttempts
 				} else {
 					s.handleFailoverSideEffects(ctx, resp, account)
@@ -2992,7 +3098,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		)
 	}
 
-	scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, body)
+	scopedRuleResult := s.applyRuntimeAccountRule(ctx, c, account, resp.StatusCode, resp.Header, body)
 	if scopedRuleResult.Matched {
 		kind := "http_error"
 		if scopedRuleResult.ShouldFailover {
@@ -3214,7 +3320,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 
-	scopedRuleResult := applyBoundAccountRule(c.Request.Context(), c, account, resp.StatusCode, resp.Header, body)
+	scopedRuleResult := s.applyRuntimeAccountRule(c.Request.Context(), c, account, resp.StatusCode, resp.Header, body)
 	if scopedRuleResult.Matched {
 		kind := "http_error"
 		if scopedRuleResult.ShouldFailover {
