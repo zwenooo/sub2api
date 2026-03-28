@@ -22,8 +22,9 @@ type AccountRepoSuite struct {
 }
 
 type schedulerCacheRecorder struct {
-	setAccounts []*service.Account
-	accounts    map[int64]*service.Account
+	setAccounts    []*service.Account
+	deletedAccount []int64
+	accounts       map[int64]*service.Account
 }
 
 func (s *schedulerCacheRecorder) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
@@ -53,6 +54,10 @@ func (s *schedulerCacheRecorder) SetAccount(ctx context.Context, account *servic
 }
 
 func (s *schedulerCacheRecorder) DeleteAccount(ctx context.Context, accountID int64) error {
+	s.deletedAccount = append(s.deletedAccount, accountID)
+	if s.accounts != nil {
+		delete(s.accounts, accountID)
+	}
 	return nil
 }
 
@@ -595,6 +600,20 @@ func (s *AccountRepoSuite) TestSetError() {
 	s.Require().NoError(err)
 	s.Require().Equal(service.StatusError, got.Status)
 	s.Require().Equal("something went wrong", got.ErrorMessage)
+}
+
+func (s *AccountRepoSuite) TestDelete_RemovesSchedulerSnapshot() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-delete-snapshot", Status: service.StatusActive})
+	cacheRecorder := &schedulerCacheRecorder{
+		accounts: map[int64]*service.Account{
+			account.ID: {ID: account.ID, Status: service.StatusActive},
+		},
+	}
+	s.repo.schedulerCache = cacheRecorder
+
+	s.Require().NoError(s.repo.Delete(s.ctx, account.ID))
+	s.Require().Contains(cacheRecorder.deletedAccount, account.ID)
+	s.Require().Nil(cacheRecorder.accounts[account.ID])
 }
 
 func (s *AccountRepoSuite) TestClearError_SyncSchedulerSnapshotOnRecovery() {
