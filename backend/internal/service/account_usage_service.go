@@ -892,6 +892,49 @@ func (s *AccountUsageService) addWindowStats(ctx context.Context, account *Accou
 	if usage.FiveHour != nil {
 		usage.FiveHour.WindowStats = windowStats
 	}
+
+	// 为 SevenDay / SevenDaySonnet 添加 7d 窗口统计
+	if usage.SevenDay != nil || usage.SevenDaySonnet != nil {
+		sevenDayStats := s.getOrLoadWindowStats(ctx, account.ID, "7d", time.Now().Add(-7*24*time.Hour))
+		if sevenDayStats != nil {
+			if usage.SevenDay != nil {
+				usage.SevenDay.WindowStats = sevenDayStats
+			}
+			if usage.SevenDaySonnet != nil {
+				usage.SevenDaySonnet.WindowStats = sevenDayStats
+			}
+		}
+	}
+}
+
+// getOrLoadWindowStats 获取指定窗口的统计数据（带缓存）
+// cacheKeySuffix 用于区分不同窗口的缓存，如 "7d"
+func (s *AccountUsageService) getOrLoadWindowStats(ctx context.Context, accountID int64, cacheKeySuffix string, startTime time.Time) *WindowStats {
+	cacheKey := fmt.Sprintf("%d:%s", accountID, cacheKeySuffix)
+
+	// 检查缓存
+	if cached, ok := s.cache.windowStatsCache.Load(cacheKey); ok {
+		if cache, ok := cached.(*windowStatsCache); ok && time.Since(cache.timestamp) < windowStatsCacheTTL {
+			return cache.stats
+		}
+	}
+
+	// 从数据库查询
+	stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, accountID, startTime)
+	if err != nil {
+		log.Printf("Failed to get %s window stats for account %d: %v", cacheKeySuffix, accountID, err)
+		return nil
+	}
+
+	ws := windowStatsFromAccountStats(stats)
+
+	// 缓存
+	s.cache.windowStatsCache.Store(cacheKey, &windowStatsCache{
+		stats:     ws,
+		timestamp: time.Now(),
+	})
+
+	return ws
 }
 
 // GetTodayStats 获取账号今日统计
