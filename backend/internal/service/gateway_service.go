@@ -4425,6 +4425,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
+
+			// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
+			scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+			maxSwitchesOverride := 0
+			if scopedRuleResult.Matched {
+				maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
+			}
+
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -4444,6 +4452,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+				MaxSwitchesOverride:    maxSwitchesOverride,
 			}
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
@@ -4459,7 +4468,16 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
-		s.handleFailoverSideEffects(ctx, resp, account)
+		// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
+		scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+		maxSwitchesOverride := 0
+		if scopedRuleResult.Matched {
+			maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
+		}
+		if !scopedRuleResult.Matched {
+			s.handleFailoverSideEffects(ctx, resp, account)
+		}
+
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -4478,6 +4496,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
 			RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+			MaxSwitchesOverride:    maxSwitchesOverride,
 		}
 	}
 	if resp.StatusCode >= 400 {
@@ -4699,6 +4718,14 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthrough(
 				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
+
+			// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
+			scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+			maxSwitchesOverride := 0
+			if scopedRuleResult.Matched {
+				maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
+			}
+
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -4719,6 +4746,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthrough(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+				MaxSwitchesOverride:    maxSwitchesOverride,
 			}
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
@@ -4732,7 +4760,16 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthrough(
 		logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
-		s.handleFailoverSideEffects(ctx, resp, account)
+		// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
+		scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+		maxSwitchesOverride := 0
+		if scopedRuleResult.Matched {
+			maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
+		}
+		if !scopedRuleResult.Matched {
+			s.handleFailoverSideEffects(ctx, resp, account)
+		}
+
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -4753,6 +4790,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthrough(
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
 			RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+			MaxSwitchesOverride:    maxSwitchesOverride,
 		}
 	}
 
@@ -5418,6 +5456,14 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 				account.ID, account.Name, resp.StatusCode, truncateString(string(respBody), 1000))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
+
+			// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
+			scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+			maxSwitchesOverride := 0
+			if scopedRuleResult.Matched {
+				maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
+			}
+
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -5430,6 +5476,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+				MaxSwitchesOverride:    maxSwitchesOverride,
 			}
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
@@ -5441,7 +5488,16 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		s.handleFailoverSideEffects(ctx, resp, account)
+		// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
+		scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+		maxSwitchesOverride := 0
+		if scopedRuleResult.Matched {
+			maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
+		}
+		if !scopedRuleResult.Matched {
+			s.handleFailoverSideEffects(ctx, resp, account)
+		}
+
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -5454,6 +5510,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
 			RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+			MaxSwitchesOverride:    maxSwitchesOverride,
 		}
 	}
 

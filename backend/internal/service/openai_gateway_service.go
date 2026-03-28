@@ -2516,7 +2516,53 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		// 透传模式不做 failover（避免改变原始上游语义），按上游原样返回错误响应。
+		// 透传模式下仍需检查账号规则并对可切换错误触发 failover。
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+		scopedRuleWantsFailover := false
+		if match := s.matchRuntimeAccountRule(c, account, resp.StatusCode, respBody); match != nil && match.Rule != nil {
+			scopedRuleWantsFailover = match.Rule.ActionFailover
+		}
+
+		// 账号规则命中 failover 或默认 failover 状态码（401/403/429/5xx 等）均触发切换
+		shouldFailover := scopedRuleWantsFailover || s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, strings.TrimSpace(extractUpstreamErrorMessage(respBody)), respBody)
+		if shouldFailover {
+			maxSwitchesOverride := 0
+			if scopedRuleWantsFailover {
+				result := s.applyRuntimeAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
+				maxSwitchesOverride = result.MaxForwardAttempts
+			} else if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			}
+			upstreamDetail := ""
+			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+				if maxBytes <= 0 {
+					maxBytes = 2048
+				}
+				upstreamDetail = truncateString(string(respBody), maxBytes)
+			}
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Passthrough:        true,
+				Kind:               "failover",
+				Message:            extractUpstreamErrorMessage(respBody),
+				Detail:             upstreamDetail,
+			})
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				RetryableOnSameAccount: !scopedRuleWantsFailover && account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, strings.TrimSpace(extractUpstreamErrorMessage(respBody)), respBody)),
+				MaxSwitchesOverride:    maxSwitchesOverride,
+			}
+		}
+		// 未命中任何 failover 条件：按原始透传语义返回。
 		return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body)
 	}
 
