@@ -56,6 +56,7 @@
           label="7d"
           :utilization="usageInfo.seven_day.utilization"
           :resets-at="usageInfo.seven_day.resets_at"
+          :window-stats="usageInfo.seven_day.window_stats"
           color="emerald"
         />
 
@@ -65,6 +66,7 @@
           label="7d S"
           :utilization="usageInfo.seven_day_sonnet.utilization"
           :resets-at="usageInfo.seven_day_sonnet.resets_at"
+          :window-stats="usageInfo.seven_day_sonnet.window_stats"
           color="purple"
         />
       </div>
@@ -112,6 +114,7 @@
           label="5h"
           :utilization="codex5hUsedPercent"
           :resets-at="codex5hResetAt"
+          :window-stats="usageInfo?.five_hour?.window_stats"
           color="indigo"
         />
 
@@ -121,6 +124,7 @@
           label="7d"
           :utilization="codex7dUsedPercent"
           :resets-at="codex7dResetAt"
+          :window-stats="usageInfo?.seven_day?.window_stats"
           color="emerald"
         />
       </div>
@@ -501,7 +505,8 @@ const isOpenAICodexSnapshotStale = computed(() => {
 
 const shouldAutoLoadUsageOnMount = computed(() => {
   if (props.account.platform === 'openai' && props.account.type === 'oauth') {
-    return isActiveOpenAIRateLimited.value || !hasCodexUsage.value || isOpenAICodexSnapshotStale.value
+    // 始终加载：即使有 codex 快照，也需要从后端获取 window_stats（req/tokens/cost）
+    return true
   }
   return shouldFetchUsage.value
 })
