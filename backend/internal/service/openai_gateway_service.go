@@ -1741,7 +1741,7 @@ func (s *OpenAIGatewayService) handleCompatUpstreamErrorWithFailover(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+			RetryableOnSameAccount: !scopedRuleWantsFailover && account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
 			MaxSwitchesOverride:    maxSwitchesOverride,
 		}
 	}
@@ -2347,7 +2347,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, &UpstreamFailoverError{
 					StatusCode:             resp.StatusCode,
 					ResponseBody:           respBody,
-					RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+					RetryableOnSameAccount: !scopedRuleWantsFailover && account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
 					MaxSwitchesOverride:    maxSwitchesOverride,
 				}
 			}
@@ -3121,7 +3121,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           body,
-				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: false,
 				MaxSwitchesOverride:    scopedRuleResult.MaxForwardAttempts,
 			}
 		}
@@ -3343,7 +3343,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           body,
-				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: false,
 				MaxSwitchesOverride:    scopedRuleResult.MaxForwardAttempts,
 			}
 		}

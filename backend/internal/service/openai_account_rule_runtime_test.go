@@ -98,6 +98,7 @@ func TestOpenAIGatewayService_HandleCompatUpstreamErrorWithFailover_AppliesRuleD
 		Name:        "openai-compat-rule",
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
 		Status:      StatusActive,
 		Schedulable: true,
 	}
@@ -131,6 +132,110 @@ func TestOpenAIGatewayService_HandleCompatUpstreamErrorWithFailover_AppliesRuleD
 	require.ErrorAs(t, err, &failoverErr)
 	require.Zero(t, nonFailoverCalls)
 	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.Equal(t, defaultAccountRuleForwardMaxAttempts, failoverErr.MaxSwitchesOverride)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Equal(t, account.ID, repo.lastSetError.id)
+	require.Contains(t, strings.ToLower(repo.lastSetError.msg), "usage limit")
+}
+
+func TestOpenAIGatewayService_HandleErrorResponse_RuleFailoverSkipsSameAccountRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	account := &Account{
+		ID:          6103,
+		Name:        "openai-http-rule",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+	repo := &openAIAccountRuleActionRepoStub{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{*account}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRuleService: newOpenAIRuntimeAccountRuleServiceForTest(
+			repo,
+			[]int{http.StatusTooManyRequests},
+			[]string{"usage limit"},
+			true,
+		),
+	}
+
+	respBody := []byte(`{"error":{"type":"rate_limit_error","message":"The usage limit has been reached"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"x-request-id": []string{"req_http_rule"}},
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+	}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, account, nil)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.Equal(t, defaultAccountRuleForwardMaxAttempts, failoverErr.MaxSwitchesOverride)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Equal(t, account.ID, repo.lastSetError.id)
+	require.Contains(t, strings.ToLower(repo.lastSetError.msg), "usage limit")
+}
+
+func TestOpenAIGatewayService_HandleCompatErrorResponse_RuleFailoverSkipsSameAccountRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", nil)
+
+	account := &Account{
+		ID:          6104,
+		Name:        "openai-compat-direct-rule",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+	repo := &openAIAccountRuleActionRepoStub{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{*account}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRuleService: newOpenAIRuntimeAccountRuleServiceForTest(
+			repo,
+			[]int{http.StatusTooManyRequests},
+			[]string{"usage limit"},
+			true,
+		),
+	}
+
+	respBody := []byte(`{"error":{"type":"rate_limit_error","message":"The usage limit has been reached"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"x-request-id": []string{"req_compat_direct_rule"}},
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+	}
+
+	writeCalls := 0
+	_, err := svc.handleCompatErrorResponse(
+		resp,
+		c,
+		account,
+		func(_ *gin.Context, _ int, _, _ string) {
+			writeCalls++
+		},
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Zero(t, writeCalls)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameAccount)
 	require.Equal(t, defaultAccountRuleForwardMaxAttempts, failoverErr.MaxSwitchesOverride)
 	require.Equal(t, 1, repo.setErrorCalls)
 	require.Equal(t, account.ID, repo.lastSetError.id)
