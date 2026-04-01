@@ -5,13 +5,13 @@
     width="extra-wide"
     @close="emit('close')"
   >
-    <div class="space-y-4">
-      <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+    <div class="space-y-5">
+      <section class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
         <div class="flex flex-wrap items-start justify-between gap-3">
-          <div class="space-y-1">
-            <div class="text-sm font-semibold text-gray-900 dark:text-white">先维护模型集合、错误规则集合，再由平台 + 业务类型绑定生效</div>
-            <div class="text-xs text-gray-500 dark:text-gray-400">
-              绑定优先级为“平台 + 业务类型”高于“平台”。集合本身独立维护，不依赖先选中某个绑定。
+          <div class="space-y-1.5">
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">先定运行策略，再选生效范围，最后维护模型与错误规则资源</div>
+            <div class="max-w-3xl text-xs leading-6 text-gray-500 dark:text-gray-400">
+              绑定优先级为“平台 + 业务类型”高于“平台”。模型集合和错误集合都是可复用资源库，选中某个绑定后再决定它挂哪套策略，阅读和维护成本会更低。
             </div>
             <div
               v-if="draftHint"
@@ -30,71 +30,193 @@
             刷新
           </button>
         </div>
-      </div>
 
-      <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
-        <div class="flex flex-wrap items-end gap-3">
-          <div class="min-w-[180px] flex-1">
+        <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div class="rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-dark-700 dark:bg-dark-800">
+            <div class="text-[11px] uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Binding</div>
+            <div class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ catalog?.bindings.length ?? 0 }}</div>
+            <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">已启用 {{ enabledBindingCount }} 个绑定</div>
+          </div>
+          <div class="rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-dark-700 dark:bg-dark-800">
+            <div class="text-[11px] uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Coverage</div>
+            <div class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ unconfiguredObservedBindings.length }}</div>
+            <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">个已观测范围仍未建绑定</div>
+          </div>
+          <div class="rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-dark-700 dark:bg-dark-800">
+            <div class="text-[11px] uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Model Sets</div>
+            <div class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ catalog?.model_collections.length ?? 0 }}</div>
+            <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">模型白名单资源库</div>
+          </div>
+          <div class="rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-dark-700 dark:bg-dark-800">
+            <div class="text-[11px] uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Error Rules</div>
+            <div class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ totalRuleCount }}</div>
+            <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">分布在 {{ catalog?.error_collections.length ?? 0 }} 个错误集合里</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="space-y-1">
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">运行设置</div>
+            <div class="text-xs text-gray-500 dark:text-gray-400">
+              这里只放全局运行策略。错误规则里的“转发请求”和这里的 429 自动转发，都共享同一个“统一转发次数上限”。
+            </div>
+          </div>
+          <div class="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+            当前 429 自动转发：{{ settingsForm.failover_on_429 ? '开启' : '关闭' }}
+          </div>
+        </div>
+
+        <div class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.25fr),minmax(280px,0.75fr)]">
+          <div class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+            <div class="flex items-start justify-between gap-4">
+              <div class="space-y-1">
+                <div class="text-sm font-semibold text-gray-900 dark:text-white">429 自动转发</div>
+                <div class="text-xs leading-6 text-gray-500 dark:text-gray-400">
+                  开启后，遇到 429 会先保留限流状态和自动恢复时间，再按统一转发次数上限切换其他正常账号；关闭后只记录限流并直接把 429 返回给当前请求。
+                </div>
+              </div>
+              <button
+                type="button"
+                :aria-pressed="settingsForm.failover_on_429"
+                class="relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-dark-800"
+                :class="settingsForm.failover_on_429 ? 'bg-primary-500' : 'bg-gray-300 dark:bg-dark-600'"
+                @click="settingsForm.failover_on_429 = !settingsForm.failover_on_429"
+              >
+                <span
+                  class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200 ease-in-out"
+                  :class="settingsForm.failover_on_429 ? 'translate-x-5' : 'translate-x-0'"
+                />
+              </button>
+            </div>
+            <div class="mt-4 rounded-xl border border-dashed border-gray-200 bg-white px-3 py-3 text-xs leading-6 text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400">
+              建议：429 场景优先用这里的自动转发，不要在错误规则里用“踢出号池”替代。前者会保留限流自动恢复，后者会把账号直接打成错误态。
+            </div>
+          </div>
+
+          <div class="rounded-2xl border border-gray-200 p-4 dark:border-dark-700">
             <label class="input-label">统一转发次数上限</label>
             <input
               v-model.number="settingsForm.forward_max_attempts"
               type="number"
               min="1"
               class="input"
+              :disabled="loading"
             />
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              命中“转发请求”动作时，单个请求最多还能切换多少次账号。
+            <p class="mt-2 text-xs leading-6 text-gray-500 dark:text-gray-400">
+              命中“转发请求”动作或 429 自动转发时，单个请求最多还能切换多少次账号。
             </p>
+            <button
+              type="button"
+              class="btn btn-primary mt-4 w-full"
+              :disabled="savingSettings || loading"
+              @click="saveSettings"
+            >
+              {{ savingSettings ? '保存中...' : '保存运行设置' }}
+            </button>
           </div>
-          <button
-            type="button"
-            class="btn btn-primary"
-            :disabled="savingSettings"
-            @click="saveSettings"
-          >
-            {{ savingSettings ? '保存中...' : '保存设置' }}
-          </button>
         </div>
-      </div>
+      </section>
 
       <div v-if="loading" class="flex items-center justify-center py-12">
         <Icon name="refresh" size="lg" class="animate-spin text-gray-400" />
       </div>
 
-      <div v-else class="grid gap-4 xl:grid-cols-[320px,minmax(0,1fr)]">
-        <div class="space-y-4">
-          <section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
-            <div class="mb-3 flex items-center justify-between gap-2">
-              <div>
-                <div class="text-sm font-semibold text-gray-900 dark:text-white">绑定关系</div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">共 {{ catalog?.bindings.length ?? 0 }} 个</div>
+      <div v-else class="space-y-5">
+        <section class="grid gap-4 xl:grid-cols-[320px,minmax(0,1fr)]">
+          <aside class="space-y-4">
+            <section class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
+              <div class="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <div class="text-sm font-semibold text-gray-900 dark:text-white">步骤 1：选择生效范围</div>
+                  <div class="text-xs text-gray-500 dark:text-gray-400">平台 / 业务类型绑定共 {{ catalog?.bindings.length ?? 0 }} 个</div>
+                </div>
+                <button type="button" class="btn btn-primary btn-sm" @click="openCreateBinding()">
+                  <Icon name="plus" size="sm" class="mr-1" />
+                  新建
+                </button>
               </div>
-              <button type="button" class="btn btn-primary btn-sm" @click="openCreateBinding()">
-                <Icon name="plus" size="sm" class="mr-1" />
-                新建
-              </button>
-            </div>
 
-            <div v-if="!catalog?.bindings.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
-              还没有任何绑定关系。
-            </div>
+              <div v-if="!catalog?.bindings.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+                还没有任何绑定关系。
+              </div>
 
-            <div v-else class="space-y-2">
-              <button
-                v-for="binding in catalog.bindings"
-                :key="binding.id"
-                type="button"
-                :class="[
-                  'w-full rounded-xl border px-3 py-3 text-left transition-colors',
-                  binding.id === selectedBindingId
-                    ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
-                    : 'border-gray-200 hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700'
-                ]"
-                @click="selectedBindingId = binding.id"
-              >
-                <div class="flex items-start justify-between gap-3">
-                  <div class="min-w-0">
-                    <div class="flex flex-wrap items-center gap-2">
+              <div v-else class="space-y-2">
+                <button
+                  v-for="binding in catalog.bindings"
+                  :key="binding.id"
+                  type="button"
+                  :class="[
+                    'w-full rounded-xl border px-3 py-3 text-left transition-colors',
+                    binding.id === selectedBindingId
+                      ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
+                      : 'border-gray-200 hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700'
+                  ]"
+                  @click="selectedBindingId = binding.id"
+                >
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+                          <PlatformIcon :platform="binding.platform" size="xs" />
+                          <span>{{ formatPlatformLabel(binding.platform) }}</span>
+                        </span>
+                        <span
+                          :class="[
+                            'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
+                            businessTypeBadgeClass(binding.business_type)
+                          ]"
+                        >
+                          {{ formatBusinessTypeLabel(binding.business_type) }}
+                        </span>
+                        <span
+                          :class="[
+                            'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
+                            binding.enabled
+                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
+                              : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
+                          ]"
+                        >
+                          {{ binding.enabled ? '启用' : '停用' }}
+                        </span>
+                      </div>
+                      <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                        模型集合：{{ resolveModelCollectionName(binding.model_collection_id) || '未绑定' }}
+                      </div>
+                      <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        错误集合：{{ resolveErrorCollectionName(binding.error_collection_id) || '未绑定' }}
+                      </div>
+                      <div v-if="binding.description" class="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
+                        {{ binding.description }}
+                      </div>
+                    </div>
+                    <Icon name="chevronRight" size="sm" class="mt-0.5 text-gray-400" />
+                  </div>
+                </button>
+              </div>
+
+              <div class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-700">
+                <div class="mb-3">
+                  <div class="text-sm font-semibold text-gray-900 dark:text-white">从现有账号快速建绑定</div>
+                  <div class="text-xs text-gray-500 dark:text-gray-400">
+                    已在账号管理里出现过、但还没建绑定的范围，可以直接一键补齐。
+                  </div>
+                </div>
+
+                <div v-if="!unconfiguredObservedBindings.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
+                  当前已覆盖所有已观测到的平台 / 业务类型组合。
+                </div>
+
+                <div v-else class="space-y-2">
+                  <button
+                    v-for="binding in unconfiguredObservedBindings"
+                    :key="observedBindingKey(binding)"
+                    type="button"
+                    class="flex w-full items-center justify-between rounded-xl border border-dashed border-gray-200 px-3 py-2.5 text-left hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700"
+                    @click="openCreateBinding(binding)"
+                  >
+                    <div class="flex min-w-0 items-center gap-2">
                       <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
                         <PlatformIcon :platform="binding.platform" size="xs" />
                         <span>{{ formatPlatformLabel(binding.platform) }}</span>
@@ -107,133 +229,151 @@
                       >
                         {{ formatBusinessTypeLabel(binding.business_type) }}
                       </span>
+                      <span class="text-xs text-gray-500 dark:text-gray-400">{{ binding.account_count }} 个账号</span>
+                    </div>
+                    <span class="text-xs font-medium text-primary-600 dark:text-primary-300">创建</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+          </aside>
+
+          <div class="space-y-4">
+            <section class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
+              <div v-if="selectedBinding" class="space-y-4">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div class="space-y-2">
+                    <div class="text-sm font-semibold text-gray-900 dark:text-white">步骤 2：为当前范围绑定策略资源</div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+                        <PlatformIcon :platform="selectedBinding.platform" size="xs" />
+                        <span>{{ formatPlatformLabel(selectedBinding.platform) }}</span>
+                      </span>
                       <span
                         :class="[
                           'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                          binding.enabled
+                          businessTypeBadgeClass(selectedBinding.business_type)
+                        ]"
+                      >
+                        {{ formatBusinessTypeLabel(selectedBinding.business_type) }}
+                      </span>
+                      <span
+                        :class="[
+                          'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
+                          selectedBinding.enabled
                             ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
                             : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
                         ]"
                       >
-                        {{ binding.enabled ? '启用' : '停用' }}
+                        {{ selectedBinding.enabled ? '启用' : '停用' }}
                       </span>
                     </div>
-                    <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                      模型集合：{{ resolveModelCollectionName(binding.model_collection_id) || '未绑定' }}
+                    <div class="text-xs leading-6 text-gray-500 dark:text-gray-400">
+                      绑定只决定这个范围最终使用哪套模型集合和错误集合。集合内容本身在下方资源库里维护。
                     </div>
-                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      错误集合：{{ resolveErrorCollectionName(binding.error_collection_id) || '未绑定' }}
-                    </div>
-                    <div v-if="binding.description" class="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
-                      {{ binding.description }}
+                    <div v-if="selectedBinding.description" class="text-sm text-gray-600 dark:text-gray-300">
+                      {{ selectedBinding.description }}
                     </div>
                   </div>
-                  <Icon name="chevronRight" size="sm" class="mt-0.5 text-gray-400" />
+                  <div class="flex flex-wrap gap-2">
+                    <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
+                      编辑绑定
+                    </button>
+                    <button type="button" class="btn btn-danger btn-sm" @click="removeBinding(selectedBinding)">
+                      删除绑定
+                    </button>
+                  </div>
                 </div>
-              </button>
-            </div>
-          </section>
 
-          <section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
-            <div class="mb-3">
-              <div class="text-sm font-semibold text-gray-900 dark:text-white">从现有账号快速建绑定</div>
-              <div class="text-xs text-gray-500 dark:text-gray-400">
-                账号管理里出现过的平台 / 业务类型组合，都可以直接一键生成绑定。
+                <div class="grid gap-4 lg:grid-cols-2">
+                  <div class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+                    <div class="flex items-start justify-between gap-3">
+                      <div>
+                        <div class="text-sm font-semibold text-gray-900 dark:text-white">模型策略</div>
+                        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">控制这个范围允许调度哪些模型。</div>
+                      </div>
+                      <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
+                        改绑定
+                      </button>
+                    </div>
+
+                    <div v-if="selectedBindingModelCollection" class="mt-4 space-y-3">
+                      <div>
+                        <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ selectedBindingModelCollection.name }}</div>
+                        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          模型 {{ selectedBindingModelCollection.models.length }} 个，已被 {{ modelCollectionBindingCounts[selectedBindingModelCollection.id] || 0 }} 个绑定使用。
+                        </div>
+                      </div>
+                      <div v-if="selectedBindingModelCollection.description" class="text-sm text-gray-600 dark:text-gray-300">
+                        {{ selectedBindingModelCollection.description }}
+                      </div>
+                      <div class="flex flex-wrap gap-2">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="openEditModelCollection(selectedBindingModelCollection)">
+                          编辑集合
+                        </button>
+                        <button type="button" class="btn btn-danger btn-sm" @click="removeModelCollection(selectedBindingModelCollection)">
+                          删除集合
+                        </button>
+                      </div>
+                    </div>
+                    <div v-else class="mt-4 rounded-xl border border-dashed border-gray-200 bg-white px-3 py-5 text-sm text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400">
+                      当前绑定还没有挂模型集合。先新建模型集合，再回到“编辑绑定”把它挂上。
+                    </div>
+                  </div>
+
+                  <div class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+                    <div class="flex items-start justify-between gap-3">
+                      <div>
+                        <div class="text-sm font-semibold text-gray-900 dark:text-white">错误策略</div>
+                        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">控制命中错误时是转发、摘除、删除，还是改写响应。</div>
+                      </div>
+                      <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
+                        改绑定
+                      </button>
+                    </div>
+
+                    <div v-if="selectedBindingErrorCollection" class="mt-4 space-y-3">
+                      <div>
+                        <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ selectedBindingErrorCollection.name }}</div>
+                        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          规则 {{ selectedBindingErrorCollection.rules.length }} 条，已被 {{ errorCollectionBindingCounts[selectedBindingErrorCollection.id] || 0 }} 个绑定使用。
+                        </div>
+                      </div>
+                      <div v-if="selectedBindingErrorCollection.description" class="text-sm text-gray-600 dark:text-gray-300">
+                        {{ selectedBindingErrorCollection.description }}
+                      </div>
+                      <div class="flex flex-wrap gap-2">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="openEditErrorCollection(selectedBindingErrorCollection)">
+                          编辑集合
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" @click="openCreateRule(undefined, selectedBindingErrorCollection.id)">
+                          新建规则
+                        </button>
+                      </div>
+                    </div>
+                    <div v-else class="mt-4 rounded-xl border border-dashed border-gray-200 bg-white px-3 py-5 text-sm text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400">
+                      当前绑定还没有挂错误集合。先建错误集合，再回到“编辑绑定”把它挂上。
+                    </div>
+
+                    <div class="mt-4 rounded-xl border border-dashed border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-6 text-amber-800 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200">
+                      429 自动转发{{ settingsForm.failover_on_429 ? '已开启' : '已关闭' }}。{{ settingsForm.failover_on_429 ? '当前范围遇到 429 会优先保留限流状态并按统一上限切换账号。' : '当前范围遇到 429 只会记录限流，不会自动切到其他账号。' }}
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
 
-            <div v-if="!unconfiguredObservedBindings.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400">
-              当前已覆盖所有已观测到的平台 / 业务类型组合。
-            </div>
-
-            <div v-else class="space-y-2">
-              <button
-                v-for="binding in unconfiguredObservedBindings"
-                :key="observedBindingKey(binding)"
-                type="button"
-                class="flex w-full items-center justify-between rounded-xl border border-dashed border-gray-200 px-3 py-2.5 text-left hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700"
-                @click="openCreateBinding(binding)"
-              >
-                <div class="flex min-w-0 items-center gap-2">
-                  <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
-                    <PlatformIcon :platform="binding.platform" size="xs" />
-                    <span>{{ formatPlatformLabel(binding.platform) }}</span>
-                  </span>
-                  <span
-                    :class="[
-                      'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                      businessTypeBadgeClass(binding.business_type)
-                    ]"
-                  >
-                    {{ formatBusinessTypeLabel(binding.business_type) }}
-                  </span>
-                  <span class="text-xs text-gray-500 dark:text-gray-400">{{ binding.account_count }} 个账号</span>
-                </div>
-                <span class="text-xs font-medium text-primary-600 dark:text-primary-300">创建</span>
-              </button>
-            </div>
-          </section>
+              <div v-else class="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400">
+                先在左侧选择一个绑定，右侧才会显示这个范围当前挂载的模型策略和错误策略。
+              </div>
+            </section>
         </div>
+        </section>
 
-        <div class="space-y-4">
-          <section
-            v-if="selectedBinding"
-            class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800"
-          >
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div class="space-y-2">
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
-                    <PlatformIcon :platform="selectedBinding.platform" size="xs" />
-                    <span>{{ formatPlatformLabel(selectedBinding.platform) }}</span>
-                  </span>
-                  <span
-                    :class="[
-                      'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                      businessTypeBadgeClass(selectedBinding.business_type)
-                    ]"
-                  >
-                    {{ formatBusinessTypeLabel(selectedBinding.business_type) }}
-                  </span>
-                  <span
-                    :class="[
-                      'inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium',
-                      selectedBinding.enabled
-                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
-                        : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
-                    ]"
-                  >
-                    {{ selectedBinding.enabled ? '启用' : '停用' }}
-                  </span>
-                </div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">
-                  绑定只负责指定这个平台 / 业务类型实际使用哪个模型集合、哪个错误集合。
-                </div>
-                <div class="text-sm text-gray-600 dark:text-gray-300">
-                  模型集合：{{ resolveModelCollectionName(selectedBinding.model_collection_id) || '未绑定' }}
-                </div>
-                <div class="text-sm text-gray-600 dark:text-gray-300">
-                  错误集合：{{ resolveErrorCollectionName(selectedBinding.error_collection_id) || '未绑定' }}
-                </div>
-                <div v-if="selectedBinding.description" class="text-sm text-gray-600 dark:text-gray-300">
-                  {{ selectedBinding.description }}
-                </div>
-              </div>
-              <div class="flex flex-wrap gap-2">
-                <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
-                  编辑绑定
-                </button>
-                <button type="button" class="btn btn-danger btn-sm" @click="removeBinding(selectedBinding)">
-                  删除绑定
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
+        <section class="grid gap-4 2xl:grid-cols-[0.85fr,1.15fr]">
+          <section class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
             <div class="mb-3 flex items-center justify-between gap-2">
               <div>
-                <div class="text-sm font-semibold text-gray-900 dark:text-white">模型集合</div>
+                <div class="text-sm font-semibold text-gray-900 dark:text-white">步骤 3A：模型集合资源库</div>
                 <div class="text-xs text-gray-500 dark:text-gray-400">共 {{ catalog?.model_collections.length ?? 0 }} 个</div>
               </div>
               <button type="button" class="btn btn-primary btn-sm" @click="openCreateModelCollection()">
@@ -246,41 +386,62 @@
               还没有任何模型集合。
             </div>
 
-            <div v-else class="grid gap-4 xl:grid-cols-[280px,minmax(0,1fr)]">
-              <div class="space-y-2">
+            <div v-else class="space-y-4">
+              <div class="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
                 <button
                   v-for="collection in catalog.model_collections"
                   :key="collection.id"
                   type="button"
                   :class="[
-                    'w-full rounded-xl border px-3 py-3 text-left transition-colors',
+                    'rounded-2xl border px-4 py-4 text-left transition-colors',
                     collection.id === selectedModelCollectionId
                       ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
                       : 'border-gray-200 hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700'
                   ]"
                   @click="selectedModelCollectionId = collection.id"
                 >
-                  <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ collection.name }}</div>
-                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    模型 {{ collection.models.length }} 个
+                  <div class="flex flex-wrap items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ collection.name }}</div>
+                      <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        模型 {{ collection.models.length }} 个，绑定 {{ modelCollectionBindingCounts[collection.id] || 0 }} 个
+                      </div>
+                    </div>
+                    <span
+                      v-if="selectedBinding?.model_collection_id === collection.id"
+                      class="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+                    >
+                      当前绑定使用中
+                    </span>
                   </div>
-                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    绑定 {{ modelCollectionBindingCounts[collection.id] || 0 }} 个
+                  <div
+                    v-if="collection.description"
+                    class="mt-3 line-clamp-2 text-xs leading-6 text-gray-500 dark:text-gray-400"
+                  >
+                    {{ collection.description }}
                   </div>
                 </button>
               </div>
 
               <div
                 v-if="selectedModelCollection"
-                class="rounded-xl border border-gray-200 p-4 dark:border-dark-700"
+                class="rounded-2xl border border-gray-200 p-4 dark:border-dark-700"
               >
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ selectedModelCollection.name }}</div>
-                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  <div class="space-y-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ selectedModelCollection.name }}</div>
+                      <span
+                        v-if="selectedBinding?.model_collection_id === selectedModelCollection.id"
+                        class="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+                      >
+                        当前绑定正在使用
+                      </span>
+                    </div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400">
                       当前 {{ selectedModelCollection.models.length }} 个模型，已被 {{ modelCollectionBindingCounts[selectedModelCollection.id] || 0 }} 个绑定使用。
                     </div>
-                    <div v-if="selectedModelCollection.description" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                    <div v-if="selectedModelCollection.description" class="text-sm text-gray-600 dark:text-gray-300">
                       {{ selectedModelCollection.description }}
                     </div>
                   </div>
@@ -310,11 +471,11 @@
             </div>
           </section>
 
-          <section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
+          <section class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
             <div class="mb-3 flex items-center justify-between gap-2">
               <div>
-                <div class="text-sm font-semibold text-gray-900 dark:text-white">错误规则集合</div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">共 {{ catalog?.error_collections.length ?? 0 }} 个</div>
+                <div class="text-sm font-semibold text-gray-900 dark:text-white">步骤 3B：错误规则资源库</div>
+                <div class="text-xs text-gray-500 dark:text-gray-400">共 {{ catalog?.error_collections.length ?? 0 }} 个错误集合</div>
               </div>
               <div class="flex flex-wrap gap-2">
                 <button type="button" class="btn btn-secondary btn-sm" :disabled="!selectedErrorCollection" @click="openCreateRule()">
@@ -331,41 +492,62 @@
               还没有任何错误规则集合。
             </div>
 
-            <div v-else class="grid gap-4 xl:grid-cols-[280px,minmax(0,1fr)]">
-              <div class="space-y-2">
+            <div v-else class="space-y-4">
+              <div class="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
                 <button
                   v-for="collection in catalog.error_collections"
                   :key="collection.id"
                   type="button"
                   :class="[
-                    'w-full rounded-xl border px-3 py-3 text-left transition-colors',
+                    'rounded-2xl border px-4 py-4 text-left transition-colors',
                     collection.id === selectedErrorCollectionId
                       ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
                       : 'border-gray-200 hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700'
                   ]"
                   @click="selectedErrorCollectionId = collection.id"
                 >
-                  <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ collection.name }}</div>
-                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    规则 {{ collection.rules.length }} 条
+                  <div class="flex flex-wrap items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ collection.name }}</div>
+                      <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        规则 {{ collection.rules.length }} 条，绑定 {{ errorCollectionBindingCounts[collection.id] || 0 }} 个
+                      </div>
+                    </div>
+                    <span
+                      v-if="selectedBinding?.error_collection_id === collection.id"
+                      class="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+                    >
+                      当前绑定使用中
+                    </span>
                   </div>
-                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    绑定 {{ errorCollectionBindingCounts[collection.id] || 0 }} 个
+                  <div
+                    v-if="collection.description"
+                    class="mt-3 line-clamp-2 text-xs leading-6 text-gray-500 dark:text-gray-400"
+                  >
+                    {{ collection.description }}
                   </div>
                 </button>
               </div>
 
               <div
                 v-if="selectedErrorCollection"
-                class="space-y-4 rounded-xl border border-gray-200 p-4 dark:border-dark-700"
+                class="space-y-4 rounded-2xl border border-gray-200 p-4 dark:border-dark-700"
               >
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ selectedErrorCollection.name }}</div>
-                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  <div class="space-y-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <div class="text-sm font-semibold text-gray-900 dark:text-white">{{ selectedErrorCollection.name }}</div>
+                      <span
+                        v-if="selectedBinding?.error_collection_id === selectedErrorCollection.id"
+                        class="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
+                      >
+                        当前绑定正在使用
+                      </span>
+                    </div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400">
                       当前 {{ selectedErrorCollection.rules.length }} 条规则，已被 {{ errorCollectionBindingCounts[selectedErrorCollection.id] || 0 }} 个绑定使用。
                     </div>
-                    <div v-if="selectedErrorCollection.description" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                    <div v-if="selectedErrorCollection.description" class="text-sm text-gray-600 dark:text-gray-300">
                       {{ selectedErrorCollection.description }}
                     </div>
                   </div>
@@ -457,7 +639,7 @@
               </div>
             </div>
           </section>
-        </div>
+        </section>
       </div>
     </div>
 
@@ -607,79 +789,162 @@
       width="wide"
       @close="closeRuleEditor"
     >
-      <form class="space-y-4" @submit.prevent="saveRule">
-        <div class="rounded-xl bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-dark-900 dark:text-gray-300">
-          当前错误集合：{{ selectedRuleCollectionName || '未选择' }}
-        </div>
-
-        <div class="grid gap-4 md:grid-cols-2">
-          <div>
-            <label class="input-label">规则名称</label>
-            <input v-model.trim="ruleForm.name" type="text" class="input" placeholder="例如：429 自动切号" />
+      <form class="space-y-5" @submit.prevent="saveRule">
+        <section class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="space-y-1">
+              <div class="text-sm font-semibold text-gray-900 dark:text-white">当前错误集合：{{ selectedRuleCollectionName || '未选择' }}</div>
+              <div class="text-xs leading-6 text-gray-500 dark:text-gray-400">
+                先定义匹配条件，再决定命中后的处置方式。429 自动切号属于全局运行策略，建议在这里补充特例动作，而不是用“踢出号池”替代限流恢复。
+              </div>
+            </div>
+            <div
+              v-if="ruleTargets429"
+              class="inline-flex rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 dark:bg-amber-900/20 dark:text-amber-200"
+            >
+              当前规则命中 429
+            </div>
           </div>
-          <div>
-            <label class="input-label">优先级</label>
-            <input v-model.number="ruleForm.priority" type="number" min="0" class="input" />
-          </div>
-        </div>
+        </section>
 
-        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <input v-model="ruleForm.enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-          <span>启用这条规则</span>
-        </label>
-
-        <div class="grid gap-4 md:grid-cols-2">
-          <div>
-            <label class="input-label">状态码</label>
-            <input v-model="ruleForm.statusCodesText" type="text" class="input" placeholder="例如：429, 400" />
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">多个状态码用逗号或空格分隔。</p>
+        <section class="rounded-2xl border border-gray-200 p-4 dark:border-dark-700">
+          <div class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">1. 基础信息</div>
+          <div class="grid gap-4 md:grid-cols-2">
+            <div>
+              <label class="input-label">规则名称</label>
+              <input v-model.trim="ruleForm.name" type="text" class="input" placeholder="例如：429 自动切号" />
+            </div>
+            <div>
+              <label class="input-label">优先级</label>
+              <input v-model.number="ruleForm.priority" type="number" min="0" class="input" />
+            </div>
           </div>
-          <div>
-            <label class="input-label">匹配模式</label>
-            <select v-model="ruleForm.match_mode" class="input">
-              <option value="any">状态码 / 关键词任一命中</option>
-              <option value="all">状态码 + 关键词都命中</option>
-            </select>
-          </div>
-        </div>
 
-        <div>
-          <label class="input-label">关键词</label>
-          <textarea
-            v-model="ruleForm.keywordsText"
-            rows="4"
-            class="input font-mono text-xs"
-            placeholder="每行一个关键词，例如：
+          <div class="mt-4 grid gap-4 md:grid-cols-[auto,minmax(0,1fr)]">
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input v-model="ruleForm.enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+              <span>启用这条规则</span>
+            </label>
+            <div>
+              <label class="input-label">规则说明</label>
+              <input v-model.trim="ruleForm.description" type="text" class="input" placeholder="例如：429 时切换到新的正常账号" />
+            </div>
+          </div>
+        </section>
+
+        <section class="rounded-2xl border border-gray-200 p-4 dark:border-dark-700">
+          <div class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">2. 匹配条件</div>
+          <div class="grid gap-4 md:grid-cols-2">
+            <div>
+              <label class="input-label">状态码</label>
+              <input v-model="ruleForm.statusCodesText" type="text" class="input" placeholder="例如：429, 400" />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">多个状态码用逗号或空格分隔。</p>
+            </div>
+            <div>
+              <label class="input-label">匹配模式</label>
+              <select v-model="ruleForm.match_mode" class="input">
+                <option value="any">状态码 / 关键词任一命中</option>
+                <option value="all">状态码 + 关键词都命中</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mt-4">
+            <label class="input-label">关键词</label>
+            <textarea
+              v-model="ruleForm.keywordsText"
+              rows="4"
+              class="input font-mono text-xs"
+              placeholder="每行一个关键词，例如：
 rate limit
 model is not supported"
-          />
-          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">用于匹配错误响应内容，不区分大小写。</p>
-        </div>
+            />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">用于匹配错误响应内容，不区分大小写。</p>
+          </div>
+        </section>
 
-        <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
-          <div class="mb-3 text-sm font-semibold text-gray-900 dark:text-white">命中后的动作</div>
+        <section class="rounded-2xl border border-gray-200 p-4 dark:border-dark-700">
+          <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="text-sm font-semibold text-gray-900 dark:text-white">3. 命中后的动作</div>
+              <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                这里决定规则命中后如何处理账号与响应。
+              </div>
+            </div>
+          </div>
+
+          <div
+            v-if="ruleTargets429"
+            class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200"
+          >
+            这条规则包含 429。自动切号受“运行设置 > 429 自动转发”控制，转发次数与统一转发次数上限一致。
+            <span v-if="ruleForm.action_disable" class="mt-2 block">
+              当前同时勾选了“踢出号池”，命中后会把账号直接打成错误态，不会按普通限流那样自动恢复。
+            </span>
+          </div>
+
           <div class="grid gap-3 md:grid-cols-2">
-            <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <label
+              :class="[
+                'flex items-start gap-3 rounded-xl border px-4 py-3 text-sm transition-colors',
+                ruleForm.action_disable
+                  ? 'border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-900/20'
+                  : 'border-gray-200 dark:border-dark-700'
+              ]"
+            >
               <input v-model="ruleForm.action_disable" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-              <span>踢出号池：把账号状态设置为不正常并停止调度</span>
+              <span class="space-y-1">
+                <span class="block font-medium text-gray-900 dark:text-white">踢出号池</span>
+                <span class="block text-xs leading-6 text-gray-500 dark:text-gray-400">把账号标记为错误态并停止调度，这不是限流态，后续不会自动恢复。</span>
+              </span>
             </label>
-            <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <label
+              :class="[
+                'flex items-start gap-3 rounded-xl border px-4 py-3 text-sm transition-colors',
+                ruleForm.action_failover
+                  ? 'border-primary-200 bg-primary-50 dark:border-primary-900/40 dark:bg-primary-900/20'
+                  : 'border-gray-200 dark:border-dark-700'
+              ]"
+            >
               <input v-model="ruleForm.action_failover" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-              <span>转发请求：把当前请求继续切换到其他正常账号</span>
+              <span class="space-y-1">
+                <span class="block font-medium text-gray-900 dark:text-white">转发请求</span>
+                <span class="block text-xs leading-6 text-gray-500 dark:text-gray-400">把当前请求继续切到其他正常账号，切换次数沿用统一转发次数上限。</span>
+              </span>
             </label>
-            <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <label
+              :class="[
+                'flex items-start gap-3 rounded-xl border px-4 py-3 text-sm transition-colors',
+                ruleForm.action_delete
+                  ? 'border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-900/20'
+                  : 'border-gray-200 dark:border-dark-700'
+              ]"
+            >
               <input v-model="ruleForm.action_delete" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-              <span>删除账号：直接删除命中的账号</span>
+              <span class="space-y-1">
+                <span class="block font-medium text-gray-900 dark:text-white">删除账号</span>
+                <span class="block text-xs leading-6 text-gray-500 dark:text-gray-400">直接删除命中的账号，只适合明确失效且不需要保留的场景。</span>
+              </span>
             </label>
-            <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <label
+              :class="[
+                'flex items-start gap-3 rounded-xl border px-4 py-3 text-sm transition-colors',
+                ruleForm.action_override
+                  ? 'border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20'
+                  : 'border-gray-200 dark:border-dark-700'
+              ]"
+            >
               <input v-model="ruleForm.action_override" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-              <span>篡改响应：把返回给用户的状态码或消息改写掉</span>
+              <span class="space-y-1">
+                <span class="block font-medium text-gray-900 dark:text-white">篡改响应</span>
+                <span class="block text-xs leading-6 text-gray-500 dark:text-gray-400">把返回给用户的状态码或消息改写掉，适合兼容上游的已知异常格式。</span>
+              </span>
             </label>
           </div>
-        </div>
+        </section>
 
-        <div v-if="ruleForm.action_override" class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
-          <div class="mb-3 text-sm font-semibold text-gray-900 dark:text-white">篡改响应细节</div>
+        <section v-if="ruleForm.action_override" class="rounded-2xl border border-gray-200 p-4 dark:border-dark-700">
+          <div class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">4. 响应改写细节</div>
           <div class="grid gap-4 md:grid-cols-2">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input v-model="ruleForm.passthrough_code" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
@@ -719,22 +984,20 @@ model is not supported"
               placeholder="返回给用户的错误消息"
             />
           </div>
-        </div>
+        </section>
 
-        <div>
-          <label class="input-label">规则说明</label>
-          <input v-model.trim="ruleForm.description" type="text" class="input" placeholder="例如：429 时切换到新的正常账号" />
-        </div>
-
-        <div>
-          <label class="input-label">样例响应</label>
-          <textarea
-            v-model="ruleForm.sample_response"
-            rows="5"
-            class="input font-mono text-xs"
-            placeholder="可粘贴完整错误响应，方便后续排查"
-          />
-        </div>
+        <section class="rounded-2xl border border-gray-200 p-4 dark:border-dark-700">
+          <div class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">5. 排查辅助</div>
+          <div>
+            <label class="input-label">样例响应</label>
+            <textarea
+              v-model="ruleForm.sample_response"
+              rows="5"
+              class="input font-mono text-xs"
+              placeholder="可粘贴完整错误响应，方便后续排查"
+            />
+          </div>
+        </section>
       </form>
 
       <template #footer>
@@ -817,7 +1080,8 @@ const autoAssignModelCollectionToBinding = ref(false)
 const autoAssignErrorCollectionToBinding = ref(false)
 
 const settingsForm = reactive({
-  forward_max_attempts: 3
+  forward_max_attempts: 3,
+  failover_on_429: true
 })
 
 const bindingForm = reactive({
@@ -876,6 +1140,16 @@ const selectedRuleCollectionName = computed(() => {
   return resolveErrorCollectionName(editingRuleCollectionId.value)
 })
 
+const selectedBindingModelCollection = computed(() => {
+  if (!selectedBinding.value?.model_collection_id) return null
+  return catalog.value?.model_collections.find(collection => collection.id === selectedBinding.value?.model_collection_id) ?? null
+})
+
+const selectedBindingErrorCollection = computed(() => {
+  if (!selectedBinding.value?.error_collection_id) return null
+  return catalog.value?.error_collections.find(collection => collection.id === selectedBinding.value?.error_collection_id) ?? null
+})
+
 const draftKey = computed(() => {
   if (!props.draftSource || !props.draftId) return ''
   return `${props.draftSource}:${props.draftId}`
@@ -910,6 +1184,18 @@ const errorCollectionBindingCounts = computed<Record<number, number>>(() => {
     counts[binding.error_collection_id] = (counts[binding.error_collection_id] || 0) + 1
   }
   return counts
+})
+
+const enabledBindingCount = computed(() => {
+  return (catalog.value?.bindings ?? []).filter(binding => binding.enabled).length
+})
+
+const totalRuleCount = computed(() => {
+  return (catalog.value?.error_collections ?? []).reduce((count, collection) => count + collection.rules.length, 0)
+})
+
+const ruleTargets429 = computed(() => {
+  return parseStatusCodes(ruleForm.statusCodesText).includes(429)
 })
 
 function bindingKey(binding: Pick<AccountRuleBinding, 'platform' | 'business_type'>): string {
@@ -1085,6 +1371,7 @@ async function loadCatalog(preferred?: {
     const data = await accountRulesAPI.getCatalog()
     catalog.value = data
     settingsForm.forward_max_attempts = data.settings.forward_max_attempts || 3
+    settingsForm.failover_on_429 = data.settings.failover_on_429 ?? true
     if (preferred?.bindingId) selectedBindingId.value = preferred.bindingId
     if (preferred?.modelCollectionId) selectedModelCollectionId.value = preferred.modelCollectionId
     if (preferred?.errorCollectionId) selectedErrorCollectionId.value = preferred.errorCollectionId
@@ -1146,9 +1433,11 @@ async function saveSettings() {
   savingSettings.value = true
   try {
     const saved = await accountRulesAPI.updateSettings({
-      forward_max_attempts: settingsForm.forward_max_attempts
+      forward_max_attempts: settingsForm.forward_max_attempts,
+      failover_on_429: settingsForm.failover_on_429
     })
     settingsForm.forward_max_attempts = saved.forward_max_attempts
+    settingsForm.failover_on_429 = saved.failover_on_429
     appStore.showSuccess('规则设置已保存')
     emit('updated')
   } catch (error: any) {

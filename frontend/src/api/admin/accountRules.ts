@@ -61,6 +61,7 @@ export interface AccountRuleObservedBinding {
 }
 
 export interface AccountRuleSettings {
+  failover_on_429: boolean
   forward_max_attempts: number
 }
 
