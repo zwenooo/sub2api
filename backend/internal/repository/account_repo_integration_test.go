@@ -270,6 +270,37 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 				s.Require().Contains(accounts[0].Name, "alpha")
 			},
 		},
+		{
+			name: "filter_by_active_excludes_runtime_unschedulable_accounts",
+			setup: func(client *dbent.Client) {
+				ctx := context.Background()
+				now := time.Now()
+				future := now.Add(10 * time.Minute)
+
+				mustCreateAccount(s.T(), client, &service.Account{Name: "normal-active", Status: service.StatusActive, Schedulable: true})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "manual-paused", Status: service.StatusActive, Schedulable: false})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "overloaded", Status: service.StatusActive, Schedulable: true, OverloadUntil: &future})
+				mustCreateAccount(s.T(), client, &service.Account{
+					Name:             "rate-limited",
+					Status:           service.StatusActive,
+					Schedulable:      true,
+					RateLimitedAt:    &now,
+					RateLimitResetAt: &future,
+				})
+
+				tempUnsched := mustCreateAccount(s.T(), client, &service.Account{Name: "temp-unsched", Status: service.StatusActive, Schedulable: true})
+				_, err := client.Account.UpdateOneID(tempUnsched.ID).
+					SetTempUnschedulableUntil(future).
+					SetTempUnschedulableReason("429").
+					Save(ctx)
+				s.Require().NoError(err)
+			},
+			status:    service.StatusActive,
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("normal-active", accounts[0].Name)
+			},
+		},
 	}
 
 	for _, tt := range tests {

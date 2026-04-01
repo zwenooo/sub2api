@@ -1191,14 +1191,30 @@ const handleBulkToggleSchedulable = async (schedulable: boolean) => {
 const handleBulkUpdated = () => { showBulkEdit.value = false; clearSelection(); reload() }
 const handleDataImported = () => { showImportData.value = false; reload() }
 const handleOpenAIAuthImported = () => { reload() }
+const hasFutureTimestamp = (value?: string | null) => {
+  if (!value) return false
+  const ts = new Date(value).getTime()
+  return Number.isFinite(ts) && ts > Date.now()
+}
+const isAccountInNormalStatus = (account: Account) => (
+  account.status === 'active' &&
+  account.schedulable &&
+  !hasFutureTimestamp(account.rate_limit_reset_at) &&
+  !hasFutureTimestamp(account.overload_until) &&
+  !hasFutureTimestamp(account.temp_unschedulable_until)
+)
 const accountMatchesCurrentFilters = (account: Account) => {
   if (params.platform && account.platform !== params.platform) return false
   if (params.type && account.type !== params.type) return false
   if (params.status) {
-    if (params.status === 'rate_limited') {
+    if (params.status === 'active') {
+      if (!isAccountInNormalStatus(account)) return false
+    } else if (params.status === 'rate_limited') {
       if (!account.rate_limit_reset_at) return false
       const resetAt = new Date(account.rate_limit_reset_at).getTime()
       if (!Number.isFinite(resetAt) || resetAt <= Date.now()) return false
+    } else if (params.status === 'temp_unschedulable') {
+      if (!hasFutureTimestamp(account.temp_unschedulable_until)) return false
     } else if (account.status !== params.status) {
       return false
     }
