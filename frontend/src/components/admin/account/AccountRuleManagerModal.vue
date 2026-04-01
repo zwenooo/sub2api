@@ -124,7 +124,44 @@
       </div>
 
       <div v-else class="space-y-5">
-        <section class="grid gap-4 xl:grid-cols-[320px,minmax(0,1fr)]">
+        <section class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="space-y-1">
+              <div class="text-sm font-semibold text-gray-900 dark:text-white">工作区导航</div>
+              <div class="text-xs leading-6 text-gray-500 dark:text-gray-400">
+                用 switch tab 在“绑定工作台 / 模型资源 / 错误资源”之间切换，避免把范围、绑定、资源库同时挤在一个页面里。
+              </div>
+            </div>
+            <div class="inline-flex flex-wrap gap-2 rounded-2xl bg-gray-100 p-1 dark:bg-dark-700">
+              <button
+                v-for="tab in workspaceTabs"
+                :key="tab.key"
+                type="button"
+                :class="[
+                  'min-w-[132px] rounded-xl px-3 py-2 text-left text-xs transition-colors',
+                  workspaceTab === tab.key
+                    ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-800 dark:text-white'
+                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-white'
+                ]"
+                @click="switchWorkspaceTab(tab.key)"
+              >
+                <span class="block text-sm font-semibold">{{ tab.label }}</span>
+                <span class="mt-0.5 block text-[11px] opacity-80">{{ tab.helper }} · {{ tab.count }}</span>
+              </button>
+            </div>
+          </div>
+          <div
+            v-if="selectedBinding"
+            class="mt-3 rounded-xl border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500 dark:border-dark-700 dark:text-gray-400"
+          >
+            当前绑定：
+            {{ formatPlatformLabel(selectedBinding.platform) }}
+            /
+            {{ formatBusinessTypeLabel(selectedBinding.business_type) }}
+          </div>
+        </section>
+
+        <section v-if="workspaceTab === 'bindings'" class="grid gap-4 xl:grid-cols-[320px,minmax(0,1fr)]">
           <aside class="space-y-4">
             <section class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
               <div class="mb-3 flex items-center justify-between gap-2">
@@ -292,9 +329,14 @@
                         <div class="text-sm font-semibold text-gray-900 dark:text-white">模型策略</div>
                         <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">控制这个范围允许调度哪些模型。</div>
                       </div>
-                      <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
-                        改绑定
-                      </button>
+                      <div class="flex flex-wrap gap-2">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="openModelWorkspace(selectedBinding.model_collection_id)">
+                          查看资源库
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
+                          改绑定
+                        </button>
+                      </div>
                     </div>
 
                     <div v-if="selectedBindingModelCollection" class="mt-4 space-y-3">
@@ -327,9 +369,14 @@
                         <div class="text-sm font-semibold text-gray-900 dark:text-white">错误策略</div>
                         <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">控制命中错误时是转发、摘除、删除，还是改写响应。</div>
                       </div>
-                      <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
-                        改绑定
-                      </button>
+                      <div class="flex flex-wrap gap-2">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="openErrorWorkspace(selectedBinding.error_collection_id)">
+                          查看资源库
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" @click="openEditBinding(selectedBinding)">
+                          改绑定
+                        </button>
+                      </div>
                     </div>
 
                     <div v-if="selectedBindingErrorCollection" class="mt-4 space-y-3">
@@ -369,7 +416,14 @@
         </div>
         </section>
 
-        <section class="grid gap-4 2xl:grid-cols-[0.85fr,1.15fr]">
+        <section v-else-if="workspaceTab === 'models'" class="space-y-4">
+          <section class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">模型资源工作区</div>
+            <div class="mt-1 text-xs leading-6 text-gray-500 dark:text-gray-400">
+              这里只维护模型白名单资源。建好或调整完模型集合后，再切回“绑定工作台”为具体范围挂载。
+            </div>
+          </section>
+
           <section class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800">
             <div class="mb-3 flex items-center justify-between gap-2">
               <div>
@@ -468,6 +522,15 @@
                   这个模型集合里还没有任何模型。
                 </div>
               </div>
+            </div>
+          </section>
+        </section>
+
+        <section v-else class="space-y-4">
+          <section class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">错误资源工作区</div>
+            <div class="mt-1 text-xs leading-6 text-gray-500 dark:text-gray-400">
+              这里只维护错误集合和规则。429 自动转发属于全局运行设置，这里主要维护按状态码或关键词触发的特例处置。
             </div>
           </section>
 
@@ -1035,6 +1098,7 @@ import {
 import { useAppStore } from '@/stores'
 
 type DraftSource = 'request-error' | 'upstream-error'
+type WorkspaceTab = 'bindings' | 'models' | 'errors'
 
 interface Props {
   show: boolean
@@ -1078,6 +1142,7 @@ const appliedDraftKey = ref('')
 const catalog = ref<AccountRuleCatalog | null>(null)
 const autoAssignModelCollectionToBinding = ref(false)
 const autoAssignErrorCollectionToBinding = ref(false)
+const workspaceTab = ref<WorkspaceTab>('bindings')
 
 const settingsForm = reactive({
   forward_max_attempts: 3,
@@ -1197,6 +1262,51 @@ const totalRuleCount = computed(() => {
 const ruleTargets429 = computed(() => {
   return parseStatusCodes(ruleForm.statusCodesText).includes(429)
 })
+
+const workspaceTabs = computed(() => [
+  {
+    key: 'bindings' as const,
+    label: '绑定工作台',
+    helper: '范围与挂载关系',
+    count: catalog.value?.bindings.length ?? 0
+  },
+  {
+    key: 'models' as const,
+    label: '模型资源',
+    helper: '白名单资源库',
+    count: catalog.value?.model_collections.length ?? 0
+  },
+  {
+    key: 'errors' as const,
+    label: '错误资源',
+    helper: '错误集合与规则',
+    count: catalog.value?.error_collections.length ?? 0
+  }
+])
+
+function switchWorkspaceTab(tab: WorkspaceTab) {
+  if (tab === 'models' && selectedBinding.value?.model_collection_id) {
+    selectedModelCollectionId.value = selectedBinding.value.model_collection_id
+  }
+  if (tab === 'errors' && selectedBinding.value?.error_collection_id) {
+    selectedErrorCollectionId.value = selectedBinding.value.error_collection_id
+  }
+  workspaceTab.value = tab
+}
+
+function openModelWorkspace(collectionId?: number | null) {
+  if (collectionId) {
+    selectedModelCollectionId.value = collectionId
+  }
+  workspaceTab.value = 'models'
+}
+
+function openErrorWorkspace(collectionId?: number | null) {
+  if (collectionId) {
+    selectedErrorCollectionId.value = collectionId
+  }
+  workspaceTab.value = 'errors'
+}
 
 function bindingKey(binding: Pick<AccountRuleBinding, 'platform' | 'business_type'>): string {
   return `${binding.platform.trim().toLowerCase()}::${binding.business_type.trim().toLowerCase()}`
@@ -1870,6 +1980,7 @@ watch(
       showModelCollectionEditor.value = false
       showErrorCollectionEditor.value = false
       showRuleEditor.value = false
+      workspaceTab.value = 'bindings'
       editingBindingId.value = null
       editingModelCollectionId.value = null
       editingErrorCollectionId.value = null
