@@ -3635,11 +3635,30 @@ func (s *GatewayService) shouldRetryUpstreamError(account *Account, statusCode i
 	return !account.ShouldHandleErrorCode(statusCode)
 }
 
+func (s *GatewayService) shouldFailoverOn429() bool {
+	if s == nil || s.accountRuleService == nil {
+		return true
+	}
+	return s.accountRuleService.ShouldFailoverOn429(context.Background())
+}
+
+func (s *GatewayService) resolveFailoverMaxSwitches(statusCode int, scopedRuleResult AccountRuleActionResult) int {
+	if scopedRuleResult.Matched && scopedRuleResult.MaxForwardAttempts > 0 {
+		return scopedRuleResult.MaxForwardAttempts
+	}
+	if statusCode == http.StatusTooManyRequests && s.shouldFailoverOn429() && s.accountRuleService != nil {
+		return s.accountRuleService.MaxForwardAttempts(context.Background())
+	}
+	return 0
+}
+
 // shouldFailoverUpstreamError determines whether an upstream error should trigger account failover.
 func (s *GatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
-	case 401, 403, 429, 529:
+	case 401, 403, 529:
 		return true
+	case 429:
+		return s.shouldFailoverOn429()
 	default:
 		return statusCode >= 500
 	}
@@ -4428,10 +4447,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 			// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
 			scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
-			maxSwitchesOverride := 0
-			if scopedRuleResult.Matched {
-				maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
-			}
+			maxSwitchesOverride := s.resolveFailoverMaxSwitches(resp.StatusCode, scopedRuleResult)
 
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -4470,10 +4486,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 		// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
 		scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
-		maxSwitchesOverride := 0
-		if scopedRuleResult.Matched {
-			maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
-		}
+		maxSwitchesOverride := s.resolveFailoverMaxSwitches(resp.StatusCode, scopedRuleResult)
 		if !scopedRuleResult.Matched {
 			s.handleFailoverSideEffects(ctx, resp, account)
 		}
@@ -4721,10 +4734,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthrough(
 
 			// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
 			scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
-			maxSwitchesOverride := 0
-			if scopedRuleResult.Matched {
-				maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
-			}
+			maxSwitchesOverride := s.resolveFailoverMaxSwitches(resp.StatusCode, scopedRuleResult)
 
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -4762,10 +4772,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthrough(
 
 		// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
 		scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
-		maxSwitchesOverride := 0
-		if scopedRuleResult.Matched {
-			maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
-		}
+		maxSwitchesOverride := s.resolveFailoverMaxSwitches(resp.StatusCode, scopedRuleResult)
 		if !scopedRuleResult.Matched {
 			s.handleFailoverSideEffects(ctx, resp, account)
 		}
@@ -5459,10 +5466,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 
 			// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
 			scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
-			maxSwitchesOverride := 0
-			if scopedRuleResult.Matched {
-				maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
-			}
+			maxSwitchesOverride := s.resolveFailoverMaxSwitches(resp.StatusCode, scopedRuleResult)
 
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -5490,10 +5494,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 
 		// 检查账号规则：执行删除/禁用动作并获取转发次数覆盖
 		scopedRuleResult := applyBoundAccountRule(ctx, c, account, resp.StatusCode, resp.Header, respBody)
-		maxSwitchesOverride := 0
-		if scopedRuleResult.Matched {
-			maxSwitchesOverride = scopedRuleResult.MaxForwardAttempts
-		}
+		maxSwitchesOverride := s.resolveFailoverMaxSwitches(resp.StatusCode, scopedRuleResult)
 		if !scopedRuleResult.Matched {
 			s.handleFailoverSideEffects(ctx, resp, account)
 		}

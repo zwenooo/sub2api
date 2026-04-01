@@ -414,19 +414,35 @@ func (s *AccountRuleService) GetRuleByID(ctx context.Context, id int64) (*Accoun
 	return rule, nil
 }
 
+func defaultAccountRuleSettings() *AccountRuleSettings {
+	return &AccountRuleSettings{
+		ForwardMaxAttempts: defaultAccountRuleForwardMaxAttempts,
+		FailoverOn429:      true,
+	}
+}
+
 func (s *AccountRuleService) GetSettings(ctx context.Context) (*AccountRuleSettings, error) {
 	if s.settingService == nil || s.settingService.settingRepo == nil {
-		return &AccountRuleSettings{ForwardMaxAttempts: defaultAccountRuleForwardMaxAttempts}, nil
+		return defaultAccountRuleSettings(), nil
 	}
-	raw, err := s.settingService.settingRepo.GetValue(ctx, SettingKeyAccountRuleForwardMaxAttempts)
-	if err != nil || strings.TrimSpace(raw) == "" {
-		return &AccountRuleSettings{ForwardMaxAttempts: defaultAccountRuleForwardMaxAttempts}, nil
+
+	settings := defaultAccountRuleSettings()
+
+	rawAttempts, err := s.settingService.settingRepo.GetValue(ctx, SettingKeyAccountRuleForwardMaxAttempts)
+	if err == nil && strings.TrimSpace(rawAttempts) != "" {
+		if value, parseErr := strconv.Atoi(strings.TrimSpace(rawAttempts)); parseErr == nil && value > 0 {
+			settings.ForwardMaxAttempts = value
+		}
 	}
-	value, parseErr := strconv.Atoi(strings.TrimSpace(raw))
-	if parseErr != nil || value <= 0 {
-		return &AccountRuleSettings{ForwardMaxAttempts: defaultAccountRuleForwardMaxAttempts}, nil
+
+	rawFailover, err := s.settingService.settingRepo.GetValue(ctx, SettingKeyAccountRuleFailoverOn429Enabled)
+	if err == nil && strings.TrimSpace(rawFailover) != "" {
+		if value, parseErr := strconv.ParseBool(strings.TrimSpace(rawFailover)); parseErr == nil {
+			settings.FailoverOn429 = value
+		}
 	}
-	return &AccountRuleSettings{ForwardMaxAttempts: value}, nil
+
+	return settings, nil
 }
 
 func (s *AccountRuleService) UpdateSettings(ctx context.Context, settings *AccountRuleSettings) (*AccountRuleSettings, error) {
@@ -436,10 +452,16 @@ func (s *AccountRuleService) UpdateSettings(ctx context.Context, settings *Accou
 	if s.settingService == nil || s.settingService.settingRepo == nil {
 		return nil, fmt.Errorf("setting service unavailable")
 	}
-	if err := s.settingService.settingRepo.Set(ctx, SettingKeyAccountRuleForwardMaxAttempts, strconv.Itoa(settings.ForwardMaxAttempts)); err != nil {
+	if err := s.settingService.settingRepo.SetMultiple(ctx, map[string]string{
+		SettingKeyAccountRuleForwardMaxAttempts:   strconv.Itoa(settings.ForwardMaxAttempts),
+		SettingKeyAccountRuleFailoverOn429Enabled: strconv.FormatBool(settings.FailoverOn429),
+	}); err != nil {
 		return nil, err
 	}
-	return &AccountRuleSettings{ForwardMaxAttempts: settings.ForwardMaxAttempts}, nil
+	return &AccountRuleSettings{
+		ForwardMaxAttempts: settings.ForwardMaxAttempts,
+		FailoverOn429:      settings.FailoverOn429,
+	}, nil
 }
 
 func (s *AccountRuleService) MaxForwardAttempts(ctx context.Context) int {
@@ -448,6 +470,14 @@ func (s *AccountRuleService) MaxForwardAttempts(ctx context.Context) int {
 		return defaultAccountRuleForwardMaxAttempts
 	}
 	return settings.ForwardMaxAttempts
+}
+
+func (s *AccountRuleService) ShouldFailoverOn429(ctx context.Context) bool {
+	settings, err := s.GetSettings(ctx)
+	if err != nil || settings == nil {
+		return true
+	}
+	return settings.FailoverOn429
 }
 
 func (s *AccountRuleService) MatchRuntimeRule(account *Account, statusCode int, body []byte) *AccountRuleMatch {

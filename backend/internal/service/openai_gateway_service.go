@@ -1622,11 +1622,27 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 
 func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
-	case 401, 402, 403, 429, 529:
+	case 401, 402, 403, 529:
 		return true
+	case 429:
+		return s.shouldFailoverOn429()
 	default:
 		return statusCode >= 500
 	}
+}
+
+func (s *OpenAIGatewayService) shouldFailoverOn429() bool {
+	if s == nil || s.accountRuleService == nil {
+		return true
+	}
+	return s.accountRuleService.ShouldFailoverOn429(context.Background())
+}
+
+func (s *OpenAIGatewayService) max429FailoverSwitches() int {
+	if !s.shouldFailoverOn429() || s == nil || s.accountRuleService == nil {
+		return 0
+	}
+	return s.accountRuleService.MaxForwardAttempts(context.Background())
 }
 
 func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
@@ -1736,6 +1752,9 @@ func (s *OpenAIGatewayService) handleCompatUpstreamErrorWithFailover(
 			maxSwitchesOverride = result.MaxForwardAttempts
 		} else if s.rateLimitService != nil {
 			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			if resp.StatusCode == http.StatusTooManyRequests {
+				maxSwitchesOverride = s.max429FailoverSwitches()
+			}
 		}
 
 		return nil, &UpstreamFailoverError{
@@ -2343,6 +2362,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					maxSwitchesOverride = result.MaxForwardAttempts
 				} else {
 					s.handleFailoverSideEffects(ctx, resp, account)
+					if resp.StatusCode == http.StatusTooManyRequests {
+						maxSwitchesOverride = s.max429FailoverSwitches()
+					}
 				}
 				return nil, &UpstreamFailoverError{
 					StatusCode:             resp.StatusCode,
@@ -2535,6 +2557,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				maxSwitchesOverride = result.MaxForwardAttempts
 			} else if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				if resp.StatusCode == http.StatusTooManyRequests {
+					maxSwitchesOverride = s.max429FailoverSwitches()
+				}
 			}
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {

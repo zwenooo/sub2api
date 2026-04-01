@@ -232,6 +232,9 @@ const (
 	// SettingKeyAccountRuleForwardMaxAttempts 统一账号规则转发重试次数
 	SettingKeyAccountRuleForwardMaxAttempts = "account_rule_forward_max_attempts"
 
+	// SettingKeyAccountRuleFailoverOn429Enabled 控制 429 是否自动切换到其他账号
+	SettingKeyAccountRuleFailoverOn429Enabled = "account_rule_failover_on_429_enabled"
+
 	// SettingKeyBackendModeEnabled Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	SettingKeyBackendModeEnabled = "backend_mode_enabled"
 )

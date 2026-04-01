@@ -76,7 +76,8 @@ type AccountRuleObservedBinding struct {
 }
 
 type AccountRuleSettings struct {
-	ForwardMaxAttempts int `json:"forward_max_attempts"`
+	ForwardMaxAttempts int  `json:"forward_max_attempts"`
+	FailoverOn429      bool `json:"failover_on_429"`
 }
 
 type AccountRuleCatalog struct {

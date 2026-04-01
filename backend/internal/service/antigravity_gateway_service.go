@@ -1659,7 +1659,15 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+				maxSwitchesOverride := 0
+				if resp.StatusCode == http.StatusTooManyRequests {
+					maxSwitchesOverride = s.max429FailoverSwitches()
+				}
+				return nil, &UpstreamFailoverError{
+					StatusCode:          resp.StatusCode,
+					ResponseBody:        respBody,
+					MaxSwitchesOverride: maxSwitchesOverride,
+				}
 			}
 
 			return nil, s.writeMappedClaudeError(c, account, resp.StatusCode, resp.Header.Get("x-request-id"), respBody)
@@ -2323,7 +2331,15 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: unwrappedForOps}
+			maxSwitchesOverride := 0
+			if resp.StatusCode == http.StatusTooManyRequests {
+				maxSwitchesOverride = s.max429FailoverSwitches()
+			}
+			return nil, &UpstreamFailoverError{
+				StatusCode:          resp.StatusCode,
+				ResponseBody:        unwrappedForOps,
+				MaxSwitchesOverride: maxSwitchesOverride,
+			}
 		}
 		if contentType == "" {
 			contentType = "application/json"
@@ -2400,11 +2416,27 @@ handleSuccess:
 
 func (s *AntigravityGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
-	case 401, 403, 429, 529:
+	case 401, 403, 529:
 		return true
+	case 429:
+		return s.shouldFailoverOn429()
 	default:
 		return statusCode >= 500
 	}
+}
+
+func (s *AntigravityGatewayService) shouldFailoverOn429() bool {
+	if s == nil || s.accountRuleService == nil {
+		return true
+	}
+	return s.accountRuleService.ShouldFailoverOn429(context.Background())
+}
+
+func (s *AntigravityGatewayService) max429FailoverSwitches() int {
+	if !s.shouldFailoverOn429() || s == nil || s.accountRuleService == nil {
+		return 0
+	}
+	return s.accountRuleService.MaxForwardAttempts(context.Background())
 }
 
 // isGoogleProjectConfigError 判断（已提取的小写）错误消息是否属于 Google 服务端配置类问题。

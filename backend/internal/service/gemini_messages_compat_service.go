@@ -983,7 +983,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+				maxSwitchesOverride := 0
+				if resp.StatusCode == http.StatusTooManyRequests {
+					maxSwitchesOverride = s.max429FailoverSwitches()
+				}
+				return nil, &UpstreamFailoverError{
+					StatusCode:          resp.StatusCode,
+					ResponseBody:        respBody,
+					MaxSwitchesOverride: maxSwitchesOverride,
+				}
 			}
 		}
 
@@ -1045,7 +1053,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+			maxSwitchesOverride := 0
+			if resp.StatusCode == http.StatusTooManyRequests {
+				maxSwitchesOverride = s.max429FailoverSwitches()
+			}
+			return nil, &UpstreamFailoverError{
+				StatusCode:          resp.StatusCode,
+				ResponseBody:        respBody,
+				MaxSwitchesOverride: maxSwitchesOverride,
+			}
 		}
 		upstreamReqID := resp.Header.Get(requestIDHeader)
 		if upstreamReqID == "" {
@@ -1530,7 +1546,15 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+				maxSwitchesOverride := 0
+				if resp.StatusCode == http.StatusTooManyRequests {
+					maxSwitchesOverride = s.max429FailoverSwitches()
+				}
+				return nil, &UpstreamFailoverError{
+					StatusCode:          resp.StatusCode,
+					ResponseBody:        respBody,
+					MaxSwitchesOverride: maxSwitchesOverride,
+				}
 			}
 		}
 
@@ -1586,7 +1610,15 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: evBody}
+			maxSwitchesOverride := 0
+			if resp.StatusCode == http.StatusTooManyRequests {
+				maxSwitchesOverride = s.max429FailoverSwitches()
+			}
+			return nil, &UpstreamFailoverError{
+				StatusCode:          resp.StatusCode,
+				ResponseBody:        evBody,
+				MaxSwitchesOverride: maxSwitchesOverride,
+			}
 		}
 
 		respBody = unwrapIfNeeded(isOAuth, respBody)
@@ -1697,8 +1729,10 @@ func (s *GeminiMessagesCompatService) checkErrorPolicyInLoop(
 
 func (s *GeminiMessagesCompatService) shouldRetryGeminiUpstreamError(account *Account, statusCode int) bool {
 	switch statusCode {
-	case 429, 500, 502, 503, 504, 529:
+	case 500, 502, 503, 504, 529:
 		return true
+	case 429:
+		return s.shouldFailoverOn429()
 	case 403:
 		// GeminiCli OAuth occasionally returns 403 transiently (activation/quota propagation); allow retry.
 		if account == nil || account.Type != AccountTypeOAuth {
@@ -1715,10 +1749,26 @@ func (s *GeminiMessagesCompatService) shouldRetryGeminiUpstreamError(account *Ac
 	}
 }
 
+func (s *GeminiMessagesCompatService) shouldFailoverOn429() bool {
+	if s == nil || s.accountRuleService == nil {
+		return true
+	}
+	return s.accountRuleService.ShouldFailoverOn429(context.Background())
+}
+
+func (s *GeminiMessagesCompatService) max429FailoverSwitches() int {
+	if !s.shouldFailoverOn429() || s == nil || s.accountRuleService == nil {
+		return 0
+	}
+	return s.accountRuleService.MaxForwardAttempts(context.Background())
+}
+
 func (s *GeminiMessagesCompatService) shouldFailoverGeminiUpstreamError(statusCode int) bool {
 	switch statusCode {
-	case 401, 403, 429, 529:
+	case 401, 403, 529:
 		return true
+	case 429:
+		return s.shouldFailoverOn429()
 	default:
 		return statusCode >= 500
 	}

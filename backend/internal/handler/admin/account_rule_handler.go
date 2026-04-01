@@ -49,7 +49,8 @@ type upsertAccountRuleErrorCollectionRequest struct {
 }
 
 type updateAccountRuleSettingsRequest struct {
-	ForwardMaxAttempts int `json:"forward_max_attempts"`
+	ForwardMaxAttempts int  `json:"forward_max_attempts"`
+	FailoverOn429      bool `json:"failover_on_429"`
 }
 
 type upsertAccountRuleRequest struct {
@@ -477,6 +478,7 @@ func (h *AccountRuleHandler) UpdateSettings(c *gin.Context) {
 	}
 	settings, err := h.accountRuleService.UpdateSettings(c.Request.Context(), &service.AccountRuleSettings{
 		ForwardMaxAttempts: req.ForwardMaxAttempts,
+		FailoverOn429:      req.FailoverOn429,
 	})
 	if err != nil {
 		response.BadRequest(c, err.Error())
