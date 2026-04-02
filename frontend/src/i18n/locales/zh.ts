@@ -1904,6 +1904,7 @@ export default {
       openAIAuthImportNameTemplatePresetIndexEmail: '序号-邮箱：{index}-{email}',
       openAIAuthImportNameTemplatePresetPlanAccount: '套餐-账号：{plan_type}-{account_id}',
       openAIAuthImportNameTemplatePresetOrgEmail: '组织-邮箱：{organization_id}-{email}',
+      openAIAuthImportNameTemplatePresetCustom: '自定义模板',
       openAIAuthImportButton: '开始导入',
       openAIAuthImporting: '导入中...',
       openAIAuthImportSelectFile: '请选择 auth.json 文件',

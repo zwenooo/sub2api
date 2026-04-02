@@ -1817,6 +1817,7 @@ export default {
       openAIAuthImportNameTemplatePresetIndexEmail: 'Index-email: {index}-{email}',
       openAIAuthImportNameTemplatePresetPlanAccount: 'Plan-account: {plan_type}-{account_id}',
       openAIAuthImportNameTemplatePresetOrgEmail: 'Org-email: {organization_id}-{email}',
+      openAIAuthImportNameTemplatePresetCustom: 'Custom template',
       openAIAuthImportButton: 'Start Import',
       openAIAuthImporting: 'Importing...',
       openAIAuthImportSelectFile: 'Please select an auth.json file',

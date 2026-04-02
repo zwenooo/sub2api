@@ -195,3 +195,66 @@ func TestImportOpenAIAuthFileSupportsGroupIDsAndNameTemplate(t *testing.T) {
 	require.Equal(t, "1-acct-4", created.Name)
 	require.Equal(t, []int64{21}, created.GroupIDs)
 }
+
+func TestImportOpenAIAuthJSONRejectsUnsupportedTemplatePlaceholder(t *testing.T) {
+	router, _ := setupOpenAIAuthImportRouter()
+
+	body := map[string]any{
+		"items": []map[string]any{
+			{
+				"tokens": map[string]any{
+					"access_token":  "at-5",
+					"refresh_token": "rt-5",
+					"account_id":    "acct-5",
+				},
+			},
+		},
+		"name_template": "{unknown}",
+	}
+
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/openai-auths/import", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "unsupported placeholder")
+}
+
+func TestImportOpenAIAuthJSONFailsWhenTemplateFieldMissing(t *testing.T) {
+	router, adminSvc := setupOpenAIAuthImportRouter()
+
+	body := map[string]any{
+		"items": []map[string]any{
+			{
+				"tokens": map[string]any{
+					"access_token":  "at-6",
+					"refresh_token": "rt-6",
+					"account_id":    "acct-6",
+				},
+				"plan_type": "plus",
+			},
+		},
+		"name_template": "{plan_type}-{email}",
+	}
+
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/openai-auths/import", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp openAIAuthImportResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Equal(t, 0, resp.Data.AccountCreated)
+	require.Equal(t, 1, resp.Data.AccountFailed)
+	require.Len(t, resp.Data.Errors, 1)
+	require.Contains(t, resp.Data.Errors[0].Message, "{email}")
+	require.Empty(t, adminSvc.createdAccounts)
+}

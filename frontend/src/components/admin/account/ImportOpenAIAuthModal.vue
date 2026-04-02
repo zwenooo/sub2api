@@ -81,14 +81,7 @@
         <div class="text-xs text-gray-500 dark:text-dark-400">
           {{ t('admin.accounts.openAIAuthImportGroupHint') }}
         </div>
-        <div
-          v-if="groupsLoading"
-          class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-300"
-        >
-          {{ t('common.loading') }}
-        </div>
         <GroupSelector
-          v-else
           v-model="selectedGroupIds"
           :groups="openAIGroups"
           platform="openai"
@@ -187,6 +180,7 @@ import type { AdminGroup, AdminOpenAIAuthImportResult, AdminOpenAIAuthImportSour
 
 interface Props {
   show: boolean
+  groups: AdminGroup[]
 }
 
 interface Emits {
@@ -195,6 +189,9 @@ interface Emits {
 }
 
 type ImportMode = 'file' | 'json'
+
+const defaultNameTemplatePresetValue = '__default__'
+const customNameTemplatePresetValue = '__custom__'
 
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
@@ -219,18 +216,17 @@ const openAIAuthImportExample = JSON.stringify(
 
 const mode = ref<ImportMode>('file')
 const importing = ref(false)
-const groupsLoading = ref(false)
 const file = ref<File | null>(null)
 const jsonText = ref('')
 const result = ref<AdminOpenAIAuthImportResult | null>(null)
-const openAIGroups = ref<AdminGroup[]>([])
 const selectedGroupIds = ref<number[]>([])
-const selectedTemplatePreset = ref('')
+const selectedTemplatePreset = ref(defaultNameTemplatePresetValue)
 const nameTemplate = ref('')
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const fileName = computed(() => file.value?.name || '')
 const errorItems = computed(() => result.value?.errors || [])
+const openAIGroups = computed(() => props.groups.filter((group) => group.platform === 'openai'))
 const supportedTemplateTokens = [
   '{index}',
   '{email}',
@@ -243,7 +239,7 @@ const supportedTemplateTokens = [
 ]
 const nameTemplatePresetOptions = computed(() => [
   {
-    value: '',
+    value: defaultNameTemplatePresetValue,
     label: t('admin.accounts.openAIAuthImportNameTemplatePresetDefault')
   },
   {
@@ -265,18 +261,33 @@ const nameTemplatePresetOptions = computed(() => [
   {
     value: '{organization_id}-{email}',
     label: t('admin.accounts.openAIAuthImportNameTemplatePresetOrgEmail')
+  },
+  {
+    value: customNameTemplatePresetValue,
+    label: t('admin.accounts.openAIAuthImportNameTemplatePresetCustom')
   }
 ])
 
+watch(nameTemplate, (value) => {
+  if (!value) {
+    selectedTemplatePreset.value = defaultNameTemplatePresetValue
+    return
+  }
+  const matched = nameTemplatePresetOptions.value.find(
+    (option) => option.value !== customNameTemplatePresetValue && option.value === value
+  )
+  selectedTemplatePreset.value = matched?.value ?? customNameTemplatePresetValue
+})
+
 watch(
   () => props.show,
-  async (open) => {
+  (open) => {
     if (!open) {
       return
     }
     mode.value = 'file'
     selectedGroupIds.value = []
-    selectedTemplatePreset.value = ''
+    selectedTemplatePreset.value = defaultNameTemplatePresetValue
     nameTemplate.value = ''
     file.value = null
     jsonText.value = ''
@@ -284,7 +295,6 @@ watch(
     if (fileInput.value) {
       fileInput.value.value = ''
     }
-    await loadOpenAIGroups()
   }
 )
 
@@ -302,19 +312,14 @@ const handleClose = () => {
   emit('close')
 }
 
-const loadOpenAIGroups = async () => {
-  groupsLoading.value = true
-  try {
-    openAIGroups.value = await adminAPI.groups.getAll('openai')
-  } catch (error: any) {
-    openAIGroups.value = []
-    appStore.showError(error?.message || t('admin.groups.failedToLoad'))
-  } finally {
-    groupsLoading.value = false
-  }
-}
-
 const applyNameTemplatePreset = () => {
+  if (selectedTemplatePreset.value === defaultNameTemplatePresetValue) {
+    nameTemplate.value = ''
+    return
+  }
+  if (selectedTemplatePreset.value === customNameTemplatePresetValue) {
+    return
+  }
   nameTemplate.value = selectedTemplatePreset.value
 }
 

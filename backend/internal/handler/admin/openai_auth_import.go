@@ -45,6 +45,17 @@ type openAIAuthImportOptions struct {
 	NameTemplate string
 }
 
+var openAIAuthImportSupportedTemplateTokens = map[string]struct{}{
+	"index":              {},
+	"email":              {},
+	"account_id":         {},
+	"chatgpt_account_id": {},
+	"chatgpt_user_id":    {},
+	"organization_id":    {},
+	"plan_type":          {},
+	"client_id":          {},
+}
+
 // ImportOpenAIAuthJSON imports OpenAI auth.json payloads from a raw JSON array.
 // POST /api/v1/admin/accounts/openai-auths/import
 func (h *AccountHandler) ImportOpenAIAuthJSON(c *gin.Context) {
@@ -217,9 +228,11 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, option
 
 	accountName := buildOpenAIAuthImportAccountName(dataAccount.Credentials, index)
 	if template := strings.TrimSpace(options.NameTemplate); template != "" {
-		if rendered := renderOpenAIRTImportNameTemplate(template, dataAccount.Credentials, index+1); rendered != "" {
-			accountName = rendered
+		rendered, err := renderOpenAIAuthImportNameTemplate(template, payload, dataAccount.Credentials, index+1)
+		if err != nil {
+			return nil, accountName, err
 		}
+		accountName = rendered
 	}
 
 	return &service.CreateAccountInput{
@@ -280,7 +293,11 @@ func decodeOpenAIAuthImportRequest(raw []byte) ([]json.RawMessage, openAIAuthImp
 		return nil, openAIAuthImportOptions{}, err
 	}
 
-	return items, normalizeOpenAIAuthImportOptions(req.GroupIDs, req.NameTemplate), nil
+	options, err := normalizeOpenAIAuthImportOptions(req.GroupIDs, req.NameTemplate)
+	if err != nil {
+		return nil, openAIAuthImportOptions{}, err
+	}
+	return items, options, nil
 }
 
 func decodeOpenAIAuthImportItemsFromRequest(items []json.RawMessage) ([]json.RawMessage, error) {
@@ -295,14 +312,20 @@ func parseOpenAIAuthImportFormOptions(c *gin.Context) (openAIAuthImportOptions, 
 	if err != nil {
 		return openAIAuthImportOptions{}, err
 	}
-	return normalizeOpenAIAuthImportOptions(groupIDs, c.PostForm("name_template")), nil
+	return normalizeOpenAIAuthImportOptions(groupIDs, c.PostForm("name_template"))
 }
 
-func normalizeOpenAIAuthImportOptions(groupIDs []int64, nameTemplate string) openAIAuthImportOptions {
+func normalizeOpenAIAuthImportOptions(groupIDs []int64, nameTemplate string) (openAIAuthImportOptions, error) {
+	trimmedTemplate := strings.TrimSpace(nameTemplate)
+	if trimmedTemplate != "" {
+		if err := validateOpenAIAuthImportNameTemplate(trimmedTemplate); err != nil {
+			return openAIAuthImportOptions{}, err
+		}
+	}
 	return openAIAuthImportOptions{
 		GroupIDs:     normalizeOpenAIRTImportGroupIDs(groupIDs),
-		NameTemplate: strings.TrimSpace(nameTemplate),
-	}
+		NameTemplate: trimmedTemplate,
+	}, nil
 }
 
 func parseOpenAIAuthImportGroupIDs(raw string) ([]int64, error) {
@@ -333,6 +356,110 @@ func parseOpenAIAuthImportGroupIDs(raw string) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+func validateOpenAIAuthImportNameTemplate(template string) error {
+	inPlaceholder := false
+	start := -1
+	for i, r := range template {
+		switch r {
+		case '{':
+			if inPlaceholder {
+				return errors.New("name_template contains nested '{'")
+			}
+			inPlaceholder = true
+			start = i
+		case '}':
+			if !inPlaceholder {
+				return errors.New("name_template contains unmatched '}'")
+			}
+			token := strings.TrimSpace(template[start+1 : i])
+			if token == "" {
+				return errors.New("name_template contains empty placeholder")
+			}
+			if _, ok := openAIAuthImportSupportedTemplateTokens[token]; !ok {
+				return fmt.Errorf("name_template contains unsupported placeholder {%s}", token)
+			}
+			inPlaceholder = false
+			start = -1
+		}
+	}
+	if inPlaceholder {
+		return errors.New("name_template contains unmatched '{'")
+	}
+	return nil
+}
+
+func renderOpenAIAuthImportNameTemplate(template string, payload map[string]any, credentials map[string]any, seq int) (string, error) {
+	values := buildOpenAIAuthImportTemplateValues(payload, credentials, seq)
+
+	var builder strings.Builder
+	inPlaceholder := false
+	start := -1
+	for i, r := range template {
+		switch r {
+		case '{':
+			if inPlaceholder {
+				return "", errors.New("name_template contains nested '{'")
+			}
+			inPlaceholder = true
+			start = i
+		case '}':
+			if !inPlaceholder {
+				return "", errors.New("name_template contains unmatched '}'")
+			}
+			token := strings.TrimSpace(template[start+1 : i])
+			value, ok := values[token]
+			if !ok {
+				return "", fmt.Errorf("name_template contains unsupported placeholder {%s}", token)
+			}
+			if value == "" {
+				return "", fmt.Errorf("name_template placeholder {%s} is empty in auth item", token)
+			}
+			builder.WriteString(value)
+			inPlaceholder = false
+			start = -1
+		default:
+			if !inPlaceholder {
+				builder.WriteRune(r)
+			}
+		}
+	}
+
+	if inPlaceholder {
+		return "", errors.New("name_template contains unmatched '{'")
+	}
+
+	rendered := strings.TrimSpace(builder.String())
+	if rendered == "" {
+		return "", errors.New("name_template generated an empty account name")
+	}
+	return rendered, nil
+}
+
+func buildOpenAIAuthImportTemplateValues(payload map[string]any, credentials map[string]any, seq int) map[string]string {
+	accountID := openAIAuthImportString(payload, "account_id")
+	chatGPTAccountID := openAIAuthImportValueString(credentials["chatgpt_account_id"])
+	if chatGPTAccountID == "" {
+		chatGPTAccountID = openAIAuthImportString(payload, "chatgpt_account_id")
+	}
+	if accountID == "" {
+		accountID = chatGPTAccountID
+	}
+	if chatGPTAccountID == "" {
+		chatGPTAccountID = accountID
+	}
+
+	return map[string]string{
+		"index":              strconv.Itoa(seq),
+		"email":              openAIAuthImportValueString(credentials["email"]),
+		"account_id":         accountID,
+		"chatgpt_account_id": chatGPTAccountID,
+		"chatgpt_user_id":    openAIAuthImportValueString(credentials["chatgpt_user_id"]),
+		"organization_id":    openAIAuthImportValueString(credentials["organization_id"]),
+		"plan_type":          openAIAuthImportValueString(credentials["plan_type"]),
+		"client_id":          openAIAuthImportValueString(credentials["client_id"]),
+	}
 }
 
 func readOpenAIAuthImportPayload(reader io.Reader) ([]byte, error) {
