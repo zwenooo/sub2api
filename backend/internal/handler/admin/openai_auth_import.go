@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -22,15 +23,26 @@ const (
 )
 
 type OpenAIAuthImportResult struct {
-	AccountCreated int                      `json:"account_created"`
-	AccountFailed  int                      `json:"account_failed"`
-	Errors         []OpenAIAuthImportError  `json:"errors,omitempty"`
+	AccountCreated int                     `json:"account_created"`
+	AccountFailed  int                     `json:"account_failed"`
+	Errors         []OpenAIAuthImportError `json:"errors,omitempty"`
 }
 
 type OpenAIAuthImportError struct {
 	Index   int    `json:"index"`
 	Name    string `json:"name,omitempty"`
 	Message string `json:"message"`
+}
+
+type openAIAuthImportRequest struct {
+	Items        []json.RawMessage `json:"items"`
+	GroupIDs     []int64           `json:"group_ids"`
+	NameTemplate string            `json:"name_template"`
+}
+
+type openAIAuthImportOptions struct {
+	GroupIDs     []int64
+	NameTemplate string
 }
 
 // ImportOpenAIAuthJSON imports OpenAI auth.json payloads from a raw JSON array.
@@ -42,7 +54,7 @@ func (h *AccountHandler) ImportOpenAIAuthJSON(c *gin.Context) {
 		return
 	}
 
-	items, err := decodeOpenAIAuthImportItems(raw)
+	items, options, err := decodeOpenAIAuthImportRequest(raw)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -51,7 +63,7 @@ func (h *AccountHandler) ImportOpenAIAuthJSON(c *gin.Context) {
 	executeAdminIdempotentJSON(c, "admin.accounts.import_openai_auth_json", map[string]any{
 		"payload": string(raw),
 	}, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		return h.importOpenAIAuthItems(ctx, items)
+		return h.importOpenAIAuthItems(ctx, items, options)
 	})
 }
 
@@ -83,15 +95,23 @@ func (h *AccountHandler) ImportOpenAIAuthFile(c *gin.Context) {
 		return
 	}
 
+	options, err := parseOpenAIAuthImportFormOptions(c)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
 	executeAdminIdempotentJSON(c, "admin.accounts.import_openai_auth_file", map[string]any{
-		"filename": fileHeader.Filename,
-		"payload":  string(raw),
+		"filename":      fileHeader.Filename,
+		"payload":       string(raw),
+		"group_ids":     options.GroupIDs,
+		"name_template": options.NameTemplate,
 	}, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		return h.importOpenAIAuthItems(ctx, items)
+		return h.importOpenAIAuthItems(ctx, items, options)
 	})
 }
 
-func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json.RawMessage) (OpenAIAuthImportResult, error) {
+func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json.RawMessage, options openAIAuthImportOptions) (OpenAIAuthImportResult, error) {
 	result := OpenAIAuthImportResult{}
 
 	for i, rawItem := range items {
@@ -113,7 +133,7 @@ func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json
 			continue
 		}
 
-		accountInput, accountName, err := buildOpenAIAuthImportAccountInput(payload, i)
+		accountInput, accountName, err := buildOpenAIAuthImportAccountInput(payload, i, options)
 		if err != nil {
 			result.AccountFailed++
 			result.Errors = append(result.Errors, OpenAIAuthImportError{
@@ -140,7 +160,7 @@ func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json
 	return result, nil
 }
 
-func buildOpenAIAuthImportAccountInput(payload map[string]any, index int) (*service.CreateAccountInput, string, error) {
+func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, options openAIAuthImportOptions) (*service.CreateAccountInput, string, error) {
 	refreshToken := openAIAuthImportString(payload, "refresh_token")
 	if refreshToken == "" {
 		return nil, "", errors.New("refresh_token is required")
@@ -196,6 +216,11 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int) (*serv
 	enrichCredentialsFromIDToken(&dataAccount)
 
 	accountName := buildOpenAIAuthImportAccountName(dataAccount.Credentials, index)
+	if template := strings.TrimSpace(options.NameTemplate); template != "" {
+		if rendered := renderOpenAIRTImportNameTemplate(template, dataAccount.Credentials, index+1); rendered != "" {
+			accountName = rendered
+		}
+	}
 
 	return &service.CreateAccountInput{
 		Name:                 accountName,
@@ -205,6 +230,7 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int) (*serv
 		Extra:                map[string]any{"import_source": openAIAuthImportSource},
 		Concurrency:          openAIAuthImportDefaultConcurrency,
 		Priority:             openAIAuthImportDefaultPriority,
+		GroupIDs:             cloneOpenAIRTImportGroupIDs(options.GroupIDs),
 		SkipDefaultGroupBind: true,
 	}, accountName, nil
 }
@@ -237,6 +263,76 @@ func decodeOpenAIAuthImportItems(raw []byte) ([]json.RawMessage, error) {
 		return nil, errors.New("payload must contain at least one auth item")
 	}
 	return items, nil
+}
+
+func decodeOpenAIAuthImportRequest(raw []byte) ([]json.RawMessage, openAIAuthImportOptions, error) {
+	if items, err := decodeOpenAIAuthImportItems(raw); err == nil {
+		return items, openAIAuthImportOptions{}, nil
+	}
+
+	var req openAIAuthImportRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, openAIAuthImportOptions{}, fmt.Errorf("payload must be a JSON array or object: %w", err)
+	}
+
+	items, err := decodeOpenAIAuthImportItemsFromRequest(req.Items)
+	if err != nil {
+		return nil, openAIAuthImportOptions{}, err
+	}
+
+	return items, normalizeOpenAIAuthImportOptions(req.GroupIDs, req.NameTemplate), nil
+}
+
+func decodeOpenAIAuthImportItemsFromRequest(items []json.RawMessage) ([]json.RawMessage, error) {
+	if len(items) == 0 {
+		return nil, errors.New("items must contain at least one auth item")
+	}
+	return items, nil
+}
+
+func parseOpenAIAuthImportFormOptions(c *gin.Context) (openAIAuthImportOptions, error) {
+	groupIDs, err := parseOpenAIAuthImportGroupIDs(c.PostForm("group_ids"))
+	if err != nil {
+		return openAIAuthImportOptions{}, err
+	}
+	return normalizeOpenAIAuthImportOptions(groupIDs, c.PostForm("name_template")), nil
+}
+
+func normalizeOpenAIAuthImportOptions(groupIDs []int64, nameTemplate string) openAIAuthImportOptions {
+	return openAIAuthImportOptions{
+		GroupIDs:     normalizeOpenAIRTImportGroupIDs(groupIDs),
+		NameTemplate: strings.TrimSpace(nameTemplate),
+	}
+}
+
+func parseOpenAIAuthImportGroupIDs(raw string) ([]int64, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+
+	var ids []int64
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal([]byte(trimmed), &ids); err != nil {
+			return nil, fmt.Errorf("group_ids must be a JSON array of integers: %w", err)
+		}
+		return ids, nil
+	}
+
+	parts := strings.Split(trimmed, ",")
+	ids = make([]int64, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("group_ids must contain integers: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func readOpenAIAuthImportPayload(reader io.Reader) ([]byte, error) {

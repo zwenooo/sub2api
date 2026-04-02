@@ -16,6 +16,7 @@ import type {
   TempUnschedulableStatus,
   AdminDataPayload,
   AdminDataImportResult,
+  AdminOpenAIAuthImportRequest,
   AdminOpenAIAuthImportSource,
   AdminOpenAIAuthImportResult,
   CheckMixedChannelRequest,
@@ -531,20 +532,44 @@ export async function importData(payload: {
 }
 
 export async function importOpenAIAuthItems(
-  items: AdminOpenAIAuthImportSource[]
+  items: AdminOpenAIAuthImportSource[],
+  options?: {
+    group_ids?: number[]
+    name_template?: string
+  }
 ): Promise<AdminOpenAIAuthImportResult> {
+  const payload: AdminOpenAIAuthImportRequest = {
+    items
+  }
+  if (options?.group_ids && options.group_ids.length > 0) {
+    payload.group_ids = options.group_ids
+  }
+  if (options?.name_template?.trim()) {
+    payload.name_template = options.name_template.trim()
+  }
+
   const { data } = await apiClient.post<AdminOpenAIAuthImportResult>(
     '/admin/accounts/openai-auths/import',
-    items
+    payload
   )
   return data
 }
 
 export async function importOpenAIAuthFile(
-  file: File
+  file: File,
+  options?: {
+    group_ids?: number[]
+    name_template?: string
+  }
 ): Promise<AdminOpenAIAuthImportResult> {
   const formData = new FormData()
   formData.append('file', file)
+  if (options?.group_ids && options.group_ids.length > 0) {
+    formData.append('group_ids', JSON.stringify(options.group_ids))
+  }
+  if (options?.name_template?.trim()) {
+    formData.append('name_template', options.name_template.trim())
+  }
 
   const { data } = await apiClient.post<AdminOpenAIAuthImportResult>(
     '/admin/accounts/openai-auths/import-file',

@@ -120,3 +120,78 @@ func TestImportOpenAIAuthFileUsesIDTokenAsAccessTokenFallback(t *testing.T) {
 	require.Equal(t, "acct-2", created.Credentials["chatgpt_account_id"])
 	require.Equal(t, "openai-acct-2", created.Name)
 }
+
+func TestImportOpenAIAuthJSONSupportsGroupIDsAndNameTemplate(t *testing.T) {
+	router, adminSvc := setupOpenAIAuthImportRouter()
+
+	body := map[string]any{
+		"items": []map[string]any{
+			{
+				"tokens": map[string]any{
+					"access_token":  "at-3",
+					"refresh_token": "rt-3",
+					"account_id":    "acct-3",
+				},
+				"email":     "plus@example.com",
+				"plan_type": "plus",
+				"client_id": "client-3",
+			},
+		},
+		"group_ids":     []int64{11, 12},
+		"name_template": "{plan_type}-{email}",
+	}
+
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/openai-auths/import", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp openAIAuthImportResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Equal(t, 1, resp.Data.AccountCreated)
+	require.Equal(t, 0, resp.Data.AccountFailed)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.Equal(t, "plus-plus@example.com", created.Name)
+	require.Equal(t, []int64{11, 12}, created.GroupIDs)
+	require.True(t, created.SkipDefaultGroupBind)
+}
+
+func TestImportOpenAIAuthFileSupportsGroupIDsAndNameTemplate(t *testing.T) {
+	router, adminSvc := setupOpenAIAuthImportRouter()
+
+	payload := `[{"tokens":{"refresh_token":"rt-4","access_token":"at-4","account_id":"acct-4"},"email":"pro@example.com","plan_type":"pro"}]`
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "auth.json")
+	require.NoError(t, err)
+	_, err = part.Write([]byte(payload))
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("group_ids", "[21]"))
+	require.NoError(t, writer.WriteField("name_template", "{index}-{account_id}"))
+	require.NoError(t, writer.Close())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/openai-auths/import-file", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp openAIAuthImportResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Equal(t, 1, resp.Data.AccountCreated)
+	require.Equal(t, 0, resp.Data.AccountFailed)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.Equal(t, "1-acct-4", created.Name)
+	require.Equal(t, []int64{21}, created.GroupIDs)
+}

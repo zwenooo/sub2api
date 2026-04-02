@@ -950,6 +950,12 @@ export interface AdminDataImportResult {
 
 export type AdminOpenAIAuthImportSource = Record<string, unknown>
 
+export interface AdminOpenAIAuthImportRequest {
+  items: AdminOpenAIAuthImportSource[]
+  group_ids?: number[]
+  name_template?: string
+}
+
 export interface AdminOpenAIAuthImportError {
   index: number
   name?: string
