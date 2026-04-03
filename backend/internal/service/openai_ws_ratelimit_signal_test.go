@@ -82,7 +82,7 @@ func (r *openAICodexExtraListRepo) ListWithFilters(_ context.Context, params pag
 	return r.accounts, &pagination.PaginationResult{Total: int64(len(r.accounts)), Page: params.Page, PageSize: params.PageSize}, nil
 }
 
-func TestOpenAIGatewayService_Forward_WSv2ErrorEventUsageLimitDoesNotPersistRateLimit(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2ErrorEventUsageLimitPersistsRateLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	resetAt := time.Now().Add(2 * time.Hour).Unix()
@@ -163,7 +163,8 @@ func TestOpenAIGatewayService_Forward_WSv2ErrorEventUsageLimitDoesNotPersistRate
 	require.Nil(t, result)
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 	require.Nil(t, upstream.lastReq, "WS 限流 error event 不应回退到同账号 HTTP")
-	require.Empty(t, repo.rateLimitCalls, "WS error event should not synthesize 429 rate-limit persistence")
+	require.Len(t, repo.rateLimitCalls, 1)
+	require.WithinDuration(t, time.Unix(resetAt, 0), repo.rateLimitCalls[0], 2*time.Second)
 }
 
 func TestOpenAIGatewayService_Forward_WSv2Handshake429PersistsRateLimit(t *testing.T) {
@@ -237,7 +238,7 @@ func TestOpenAIGatewayService_Forward_WSv2Handshake429PersistsRateLimit(t *testi
 	require.Contains(t, repo.updateExtra[0], "codex_usage_updated_at")
 }
 
-func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ErrorEventUsageLimitDoesNotPersistRateLimit(t *testing.T) {
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ErrorEventUsageLimitPersistsRateLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	cfg := newOpenAIWSV2TestConfig()
@@ -336,7 +337,8 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ErrorEventUsageL
 	select {
 	case serverErr := <-serverErrCh:
 		require.Error(t, serverErr)
-		require.Empty(t, repo.rateLimitCalls, "ingress WS error event should not synthesize 429 rate-limit persistence")
+		require.Len(t, repo.rateLimitCalls, 1)
+		require.WithinDuration(t, time.Unix(resetAt, 0), repo.rateLimitCalls[0], 2*time.Second)
 	case <-time.After(5 * time.Second):
 		t.Fatal("等待 ingress websocket 结束超时")
 	}
