@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type accountUsageCodexProbeRepo struct {
@@ -138,7 +140,7 @@ func TestExtractOpenAICodexProbeSnapshotDoesNotReturnResetAtForSuccessfulRespons
 	}
 }
 
-func TestAccountUsageService_PersistOpenAICodexProbeSnapshotPersistsExtraOnly(t *testing.T) {
+func TestAccountUsageService_PersistOpenAICodexProbeSnapshotPersistsExtraAndRateLimitOn429(t *testing.T) {
 	t.Parallel()
 
 	repo := &accountUsageCodexProbeRepo{
@@ -164,7 +166,8 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotPersistsExtraOnly(t 
 
 	select {
 	case got := <-repo.rateLimitCh:
-		t.Fatalf("unexpected rate limit persistence: %v", got)
-	case <-time.After(200 * time.Millisecond):
+		require.WithinDuration(t, resetAt, got, time.Second)
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiting for codex probe rate-limit persistence timed out")
 	}
 }

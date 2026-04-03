@@ -1856,6 +1856,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		var dialErr *openAIWSDialError
 		if errors.As(err, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {
 			s.persistOpenAIWSErrorSignals(ctx, nil, account, dialErr.ResponseHeaders, nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(err.Error()))
+			if s != nil && s.rateLimitService != nil {
+				signalBody := openAIWSErrorSignalBody(nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(err.Error()))
+				s.rateLimitService.HandleUpstreamError(ctx, account, http.StatusTooManyRequests, dialErr.ResponseHeaders, signalBody)
+			}
 		}
 		return nil, wrapOpenAIWSFallback(classifyOpenAIWSAcquireError(err), err)
 	}
@@ -2648,6 +2652,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			var dialErr *openAIWSDialError
 			if errors.As(acquireErr, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {
 				s.persistOpenAIWSErrorSignals(ctx, nil, account, dialErr.ResponseHeaders, nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(acquireErr.Error()))
+				if s != nil && s.rateLimitService != nil {
+					signalBody := openAIWSErrorSignalBody(nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(acquireErr.Error()))
+					s.rateLimitService.HandleUpstreamError(ctx, account, http.StatusTooManyRequests, dialErr.ResponseHeaders, signalBody)
+				}
 			}
 			if errors.Is(acquireErr, errOpenAIWSPreferredConnUnavailable) {
 				return nil, NewOpenAIWSClientCloseError(
@@ -3942,16 +3950,7 @@ func (s *OpenAIGatewayService) persistOpenAIWSErrorSignals(
 
 	signalBody := openAIWSErrorSignalBody(responseBody, codeRaw, errTypeRaw, msgRaw)
 	statusCode := openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw)
-	result = s.applyRuntimeAccountRule(ctx, c, account, statusCode, headers, signalBody)
-
-	if s == nil || s.rateLimitService == nil {
-		return result
-	}
-	if !isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw) {
-		return result
-	}
-	s.rateLimitService.HandleUpstreamError(ctx, account, http.StatusTooManyRequests, headers, signalBody)
-	return result
+	return s.applyRuntimeAccountRule(ctx, c, account, statusCode, headers, signalBody)
 }
 
 func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (string, bool) {

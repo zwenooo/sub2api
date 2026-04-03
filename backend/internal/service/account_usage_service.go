@@ -576,11 +576,20 @@ func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, u
 		return
 	}
 
+	var persistedResetAt *time.Time
+	if resetAt != nil {
+		normalized := resetAt.UTC()
+		persistedResetAt = &normalized
+	}
+
 	go func() {
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer updateCancel()
 		if len(updates) > 0 {
 			_ = s.accountRepo.UpdateExtra(updateCtx, accountID, updates)
+		}
+		if persistedResetAt != nil {
+			_ = s.accountRepo.SetRateLimited(updateCtx, accountID, *persistedResetAt)
 		}
 	}()
 }

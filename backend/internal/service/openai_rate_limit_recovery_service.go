@@ -211,7 +211,7 @@ func (s *OpenAIRateLimitRecoveryService) listRecoverableAccounts(ctx context.Con
 			if !account.IsActive() || !account.Schedulable {
 				continue
 			}
-			if !account.IsOpenAIOAuth() && !account.IsOpenAIApiKey() {
+			if !account.IsOpenAIOAuth() {
 				continue
 			}
 			if account.RateLimitResetAt == nil || !now.Before(*account.RateLimitResetAt) {
