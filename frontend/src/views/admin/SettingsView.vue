@@ -334,10 +334,20 @@
                     {{ t('admin.settings.openAIRateLimitRecovery.enabledHint') }}
                   </p>
                 </div>
-                <Toggle v-model="openAIRateLimitRecoveryForm.enabled" />
+                <Toggle
+                  v-model="openAIRateLimitRecoveryForm.enabled"
+                  :disabled="openAIRateLimitRecoveryControlsDisabled"
+                />
               </div>
 
               <div class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+                <div
+                  v-if="openAIRateLimitRecoveryLoadFailed"
+                  class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800/80 dark:bg-red-900/20 dark:text-red-300"
+                >
+                  {{ t('admin.settings.failedToLoad') }}
+                </div>
+
                 <div>
                   <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
                     {{ t('admin.settings.openAIRateLimitRecovery.testModel') }}
@@ -346,6 +356,7 @@
                     v-model.trim="openAIRateLimitRecoveryForm.test_model"
                     type="text"
                     class="input w-full max-w-md"
+                    :disabled="openAIRateLimitRecoveryControlsDisabled"
                     :placeholder="t('admin.settings.openAIRateLimitRecovery.testModelPlaceholder')"
                     @keydown.enter.stop.prevent="saveOpenAIRateLimitRecoverySettings"
                   />
@@ -364,6 +375,7 @@
                     min="1"
                     max="1440"
                     class="input w-32"
+                    :disabled="openAIRateLimitRecoveryControlsDisabled"
                     @keydown.enter.stop.prevent="saveOpenAIRateLimitRecoverySettings"
                   />
                   <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
@@ -376,7 +388,7 @@
                 <button
                   type="button"
                   @click="saveOpenAIRateLimitRecoverySettings"
-                  :disabled="openAIRateLimitRecoverySaving"
+                  :disabled="openAIRateLimitRecoveryControlsDisabled"
                   class="btn btn-primary btn-sm"
                 >
                   <svg
@@ -1777,7 +1789,10 @@
         </div>
 
         <!-- Save Button -->
-        <div v-show="activeTab !== 'backup' && activeTab !== 'data'" class="flex justify-end">
+        <div
+          v-show="activeTab !== 'backup' && activeTab !== 'data' && activeTab !== 'gateway'"
+          class="flex justify-end"
+        >
           <button type="submit" :disabled="saving" class="btn btn-primary">
             <svg v-if="saving" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
               <circle
@@ -1879,11 +1894,18 @@ const streamTimeoutForm = reactive({
 // OpenAI Rate Limit Recovery 状态
 const openAIRateLimitRecoveryLoading = ref(true)
 const openAIRateLimitRecoverySaving = ref(false)
+const openAIRateLimitRecoveryLoadFailed = ref(false)
 const openAIRateLimitRecoveryForm = reactive<OpenAIRateLimitRecoverySettings>({
   enabled: false,
   test_model: 'gpt-5.1-codex',
   check_interval_minutes: 10
 })
+const openAIRateLimitRecoveryControlsDisabled = computed(
+  () =>
+    openAIRateLimitRecoveryLoading.value ||
+    openAIRateLimitRecoverySaving.value ||
+    openAIRateLimitRecoveryLoadFailed.value
+)
 
 // Rectifier 状态
 const rectifierLoading = ref(true)
@@ -2419,17 +2441,26 @@ async function saveStreamTimeoutSettings() {
 
 async function loadOpenAIRateLimitRecoverySettings() {
   openAIRateLimitRecoveryLoading.value = true
+  openAIRateLimitRecoveryLoadFailed.value = false
   try {
     const settings = await adminAPI.settings.getOpenAIRateLimitRecoverySettings()
     Object.assign(openAIRateLimitRecoveryForm, settings)
-  } catch (error) {
+  } catch (error: any) {
+    openAIRateLimitRecoveryLoadFailed.value = true
     console.error('Failed to load OpenAI rate limit recovery settings:', error)
+    appStore.showError(
+      t('admin.settings.failedToLoad') + ': ' + (error.message || t('common.unknownError'))
+    )
   } finally {
     openAIRateLimitRecoveryLoading.value = false
   }
 }
 
 async function saveOpenAIRateLimitRecoverySettings() {
+  if (openAIRateLimitRecoveryControlsDisabled.value) {
+    return
+  }
+
   const testModel = openAIRateLimitRecoveryForm.test_model.trim()
   const interval = Math.floor(Number(openAIRateLimitRecoveryForm.check_interval_minutes))
 
