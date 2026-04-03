@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -144,7 +145,7 @@ func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json
 			continue
 		}
 
-		accountInput, accountName, err := buildOpenAIAuthImportAccountInput(payload, i, options)
+		accountInput, accountName, err := buildOpenAIAuthImportAccountInput(ctx, payload, i, options, h.resolveOpenAIAuthImportPlanType)
 		if err != nil {
 			result.AccountFailed++
 			result.Errors = append(result.Errors, OpenAIAuthImportError{
@@ -171,7 +172,9 @@ func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json
 	return result, nil
 }
 
-func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, options openAIAuthImportOptions) (*service.CreateAccountInput, string, error) {
+type openAIAuthImportPlanTypeResolver func(ctx context.Context, accessToken string, accountIDHint string) (string, string, error)
+
+func buildOpenAIAuthImportAccountInput(ctx context.Context, payload map[string]any, index int, options openAIAuthImportOptions, planTypeResolver openAIAuthImportPlanTypeResolver) (*service.CreateAccountInput, string, error) {
 	refreshToken := openAIAuthImportString(payload, "refresh_token")
 	if refreshToken == "" {
 		return nil, "", errors.New("refresh_token is required")
@@ -179,6 +182,7 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, option
 
 	idToken := openAIAuthImportString(payload, "id_token")
 	accessToken := openAIAuthImportString(payload, "access_token")
+	livePlanAccessToken := accessToken
 	if accessToken == "" && idToken != "" {
 		// codex-service-go treats id_token as a usable bearer fallback when access_token is absent.
 		accessToken = idToken
@@ -225,6 +229,7 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, option
 		Credentials: credentials,
 	}
 	enrichCredentialsFromIDToken(&dataAccount)
+	enrichOpenAIAuthImportCredentialsFromResolver(ctx, &dataAccount, livePlanAccessToken, planTypeResolver)
 
 	accountName := buildOpenAIAuthImportAccountName(dataAccount.Credentials, index)
 	if template := strings.TrimSpace(options.NameTemplate); template != "" {
@@ -246,6 +251,37 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, option
 		GroupIDs:             cloneOpenAIRTImportGroupIDs(options.GroupIDs),
 		SkipDefaultGroupBind: true,
 	}, accountName, nil
+}
+
+func (h *AccountHandler) resolveOpenAIAuthImportPlanType(ctx context.Context, accessToken string, accountIDHint string) (string, string, error) {
+	if h == nil || h.openaiOAuthService == nil {
+		return "", "", nil
+	}
+	return h.openaiOAuthService.ResolvePlanTypeFromAccessToken(ctx, accessToken, "", accountIDHint)
+}
+
+func enrichOpenAIAuthImportCredentialsFromResolver(ctx context.Context, item *DataAccount, accessToken string, planTypeResolver openAIAuthImportPlanTypeResolver) {
+	if item == nil || item.Credentials == nil || planTypeResolver == nil {
+		return
+	}
+
+	if strings.TrimSpace(accessToken) == "" {
+		return
+	}
+
+	accountIDHint, _ := item.Credentials["chatgpt_account_id"].(string)
+	resolvedPlanType, resolvedAccountID, err := planTypeResolver(ctx, accessToken, accountIDHint)
+	if err != nil {
+		slog.Warn("openai_auth_import_plan_type_resolve_failed", "account", item.Name, "error", err, "chatgpt_account_id", accountIDHint)
+		return
+	}
+
+	if strings.TrimSpace(resolvedPlanType) != "" {
+		item.Credentials["plan_type"] = strings.TrimSpace(resolvedPlanType)
+	}
+	if existingAccountID, _ := item.Credentials["chatgpt_account_id"].(string); strings.TrimSpace(existingAccountID) == "" && strings.TrimSpace(resolvedAccountID) != "" {
+		item.Credentials["chatgpt_account_id"] = strings.TrimSpace(resolvedAccountID)
+	}
 }
 
 func buildOpenAIAuthImportAccountName(credentials map[string]any, index int) string {

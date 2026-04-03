@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -257,4 +258,34 @@ func TestImportOpenAIAuthJSONFailsWhenTemplateFieldMissing(t *testing.T) {
 	require.Len(t, resp.Data.Errors, 1)
 	require.Contains(t, resp.Data.Errors[0].Message, "{email}")
 	require.Empty(t, adminSvc.createdAccounts)
+}
+
+func TestBuildOpenAIAuthImportAccountInputPrefersResolvedPlanType(t *testing.T) {
+	payload := map[string]any{
+		"tokens": map[string]any{
+			"access_token":  "at-live",
+			"refresh_token": "rt-live",
+			"account_id":    "acct-live",
+		},
+		"email":     "plus@example.com",
+		"plan_type": "free",
+	}
+
+	input, accountName, err := buildOpenAIAuthImportAccountInput(
+		context.Background(),
+		payload,
+		0,
+		openAIAuthImportOptions{NameTemplate: "{plan_type}-{email}"},
+		func(ctx context.Context, accessToken string, accountIDHint string) (string, string, error) {
+			require.Equal(t, "at-live", accessToken)
+			require.Equal(t, "acct-live", accountIDHint)
+			return "plus", "acct-live", nil
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, input)
+	require.Equal(t, "plus-plus@example.com", accountName)
+	require.Equal(t, "plus-plus@example.com", input.Name)
+	require.Equal(t, "plus", input.Credentials["plan_type"])
+	require.Equal(t, "acct-live", input.Credentials["chatgpt_account_id"])
 }
