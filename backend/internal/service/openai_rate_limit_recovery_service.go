@@ -30,6 +30,8 @@ type OpenAIRateLimitRecoveryService struct {
 	stopOnce  sync.Once
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
+	runCtx    context.Context
+	cancelRun context.CancelFunc
 
 	running         atomic.Bool
 	lastRunUnixNano atomic.Int64
@@ -41,12 +43,15 @@ func NewOpenAIRateLimitRecoveryService(
 	rateLimitSvc *RateLimitService,
 	settingService *SettingService,
 ) *OpenAIRateLimitRecoveryService {
+	runCtx, cancelRun := context.WithCancel(context.Background())
 	return &OpenAIRateLimitRecoveryService{
 		accountRepo:    accountRepo,
 		accountTest:    accountTest,
 		rateLimitSvc:   rateLimitSvc,
 		settingService: settingService,
 		stopCh:         make(chan struct{}),
+		runCtx:         runCtx,
+		cancelRun:      cancelRun,
 	}
 }
 
@@ -66,6 +71,9 @@ func (s *OpenAIRateLimitRecoveryService) Stop() {
 		return
 	}
 	s.stopOnce.Do(func() {
+		if s.cancelRun != nil {
+			s.cancelRun()
+		}
 		close(s.stopCh)
 		s.wg.Wait()
 	})
@@ -93,11 +101,14 @@ func (s *OpenAIRateLimitRecoveryService) tick() {
 	}
 	defer s.running.Store(false)
 
-	ctx, cancel := context.WithTimeout(context.Background(), openAIRateLimitRecoveryRoundTimeout)
+	ctx, cancel := context.WithTimeout(s.runCtx, openAIRateLimitRecoveryRoundTimeout)
 	defer cancel()
 
 	settings, err := s.settingService.GetOpenAIRateLimitRecoverySettings(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] load settings failed: %v", err)
 		return
 	}
@@ -119,6 +130,9 @@ func (s *OpenAIRateLimitRecoveryService) tick() {
 func (s *OpenAIRateLimitRecoveryService) runRecoveryRound(ctx context.Context, now time.Time, settings *OpenAIRateLimitRecoverySettings) {
 	accounts, err := s.listRecoverableAccounts(ctx, now)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] list accounts failed: %v", err)
 		return
 	}
@@ -142,7 +156,12 @@ func (s *OpenAIRateLimitRecoveryService) runRecoveryRound(ctx context.Context, n
 
 	for i := range accounts {
 		account := accounts[i]
-		sem <- struct{}{}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		}
 		wg.Add(1)
 		go func(acc Account) {
 			defer wg.Done()
@@ -211,6 +230,9 @@ func (s *OpenAIRateLimitRecoveryService) listRecoverableAccounts(ctx context.Con
 
 func (s *OpenAIRateLimitRecoveryService) runRecoveryCheck(parent context.Context, account *Account, testModel string) bool {
 	if s == nil || account == nil {
+		return false
+	}
+	if parent.Err() != nil {
 		return false
 	}
 

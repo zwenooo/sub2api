@@ -347,6 +347,7 @@
                     type="text"
                     class="input w-full max-w-md"
                     :placeholder="t('admin.settings.openAIRateLimitRecovery.testModelPlaceholder')"
+                    @keydown.enter.stop.prevent="saveOpenAIRateLimitRecoverySettings"
                   />
                   <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                     {{ t('admin.settings.openAIRateLimitRecovery.testModelHint') }}
@@ -363,6 +364,7 @@
                     min="1"
                     max="1440"
                     class="input w-32"
+                    @keydown.enter.stop.prevent="saveOpenAIRateLimitRecoverySettings"
                   />
                   <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                     {{ t('admin.settings.openAIRateLimitRecovery.checkIntervalMinutesHint') }}
