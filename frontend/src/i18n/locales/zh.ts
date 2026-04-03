@@ -1895,6 +1895,8 @@ export default {
       openAIAuthImportJsonPlaceholder: '请粘贴 JSON 数组内容，示例见上方。',
       openAIAuthImportGroupTitle: '导入后绑定分组',
       openAIAuthImportGroupHint: '可为本次导入的所有账号直接绑定 OpenAI 分组；不选择则保持未分组。',
+      openAIAuthImportRefreshBeforeImport: '导入前先用 refresh_token 刷新凭证',
+      openAIAuthImportRefreshBeforeImportHint: '默认关闭。开启后会先用每条记录的 refresh_token 刷新一次，使用刷新返回的最新 id_token/access_token 再入库；刷新失败的记录会直接导入失败。',
       openAIAuthImportNameTemplate: '账号名称模板',
       openAIAuthImportNameTemplatePlaceholder: '留空则使用默认命名规则，例如：{plan_type}-{email}',
       openAIAuthImportNameTemplateHint: '支持点击下方占位符快速拼接模板。{index} 为本次导入从 1 开始的序号，其余字段均从 auth.json 或 id_token 中提取。',

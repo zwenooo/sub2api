@@ -36,14 +36,16 @@ type OpenAIAuthImportError struct {
 }
 
 type openAIAuthImportRequest struct {
-	Items        []json.RawMessage `json:"items"`
-	GroupIDs     []int64           `json:"group_ids"`
-	NameTemplate string            `json:"name_template"`
+	Items               []json.RawMessage `json:"items"`
+	GroupIDs            []int64           `json:"group_ids"`
+	NameTemplate        string            `json:"name_template"`
+	RefreshBeforeImport bool              `json:"refresh_before_import"`
 }
 
 type openAIAuthImportOptions struct {
-	GroupIDs     []int64
-	NameTemplate string
+	GroupIDs            []int64
+	NameTemplate        string
+	RefreshBeforeImport bool
 }
 
 var openAIAuthImportSupportedTemplateTokens = map[string]struct{}{
@@ -73,7 +75,8 @@ func (h *AccountHandler) ImportOpenAIAuthJSON(c *gin.Context) {
 	}
 
 	executeAdminIdempotentJSON(c, "admin.accounts.import_openai_auth_json", map[string]any{
-		"payload": string(raw),
+		"payload":               string(raw),
+		"refresh_before_import": options.RefreshBeforeImport,
 	}, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		return h.importOpenAIAuthItems(ctx, items, options)
 	})
@@ -114,10 +117,11 @@ func (h *AccountHandler) ImportOpenAIAuthFile(c *gin.Context) {
 	}
 
 	executeAdminIdempotentJSON(c, "admin.accounts.import_openai_auth_file", map[string]any{
-		"filename":      fileHeader.Filename,
-		"payload":       string(raw),
-		"group_ids":     options.GroupIDs,
-		"name_template": options.NameTemplate,
+		"filename":              fileHeader.Filename,
+		"payload":               string(raw),
+		"group_ids":             options.GroupIDs,
+		"name_template":         options.NameTemplate,
+		"refresh_before_import": options.RefreshBeforeImport,
 	}, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		return h.importOpenAIAuthItems(ctx, items, options)
 	})
@@ -125,6 +129,9 @@ func (h *AccountHandler) ImportOpenAIAuthFile(c *gin.Context) {
 
 func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json.RawMessage, options openAIAuthImportOptions) (OpenAIAuthImportResult, error) {
 	result := OpenAIAuthImportResult{}
+	if options.RefreshBeforeImport && h.openaiOAuthService == nil {
+		return result, errors.New("openai oauth service not available for refresh_before_import")
+	}
 
 	for i, rawItem := range items {
 		var payload map[string]any
@@ -145,7 +152,7 @@ func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json
 			continue
 		}
 
-		accountInput, accountName, err := buildOpenAIAuthImportAccountInput(payload, i, options)
+		accountInput, accountName, err := buildOpenAIAuthImportAccountInput(ctx, payload, i, options, h.refreshOpenAIAuthImportTokens)
 		if err != nil {
 			result.AccountFailed++
 			result.Errors = append(result.Errors, OpenAIAuthImportError{
@@ -172,7 +179,9 @@ func (h *AccountHandler) importOpenAIAuthItems(ctx context.Context, items []json
 	return result, nil
 }
 
-func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, options openAIAuthImportOptions) (*service.CreateAccountInput, string, error) {
+type openAIAuthImportTokenRefresher func(ctx context.Context, refreshToken string, clientID string) (*service.OpenAITokenInfo, error)
+
+func buildOpenAIAuthImportAccountInput(ctx context.Context, payload map[string]any, index int, options openAIAuthImportOptions, tokenRefresher openAIAuthImportTokenRefresher) (*service.CreateAccountInput, string, error) {
 	refreshToken := openAIAuthImportString(payload, "refresh_token")
 	if refreshToken == "" {
 		return nil, "", errors.New("refresh_token is required")
@@ -180,6 +189,61 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, option
 
 	idToken := openAIAuthImportString(payload, "id_token")
 	accessToken := openAIAuthImportString(payload, "access_token")
+	clientID := openAIAuthImportString(payload, "client_id")
+	email := openAIAuthImportString(payload, "email")
+	planType := openAIAuthImportString(payload, "plan_type")
+	organizationID := openAIAuthImportString(payload, "organization_id")
+	chatGPTUserID := openAIAuthImportString(payload, "chatgpt_user_id")
+	chatGPTAccountID := openAIAuthImportString(payload, "chatgpt_account_id")
+	if chatGPTAccountID == "" {
+		chatGPTAccountID = openAIAuthImportString(payload, "account_id")
+	}
+
+	if options.RefreshBeforeImport {
+		if tokenRefresher == nil {
+			return nil, "", errors.New("refresh_before_import is enabled but token refresher is unavailable")
+		}
+		refreshed, err := tokenRefresher(ctx, refreshToken, clientID)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to refresh auth item before import: %w", err)
+		}
+		if refreshed == nil {
+			return nil, "", errors.New("failed to refresh auth item before import: empty token response")
+		}
+		if strings.TrimSpace(refreshed.IDToken) == "" {
+			return nil, "", errors.New("failed to refresh auth item before import: refreshed id_token is required")
+		}
+		idToken = strings.TrimSpace(refreshed.IDToken)
+		accessToken = strings.TrimSpace(refreshed.AccessToken)
+		if accessToken == "" {
+			accessToken = idToken
+		}
+		if accessToken == "" {
+			return nil, "", errors.New("failed to refresh auth item before import: refreshed access_token or id_token is required")
+		}
+		if trimmed := strings.TrimSpace(refreshed.RefreshToken); trimmed != "" {
+			refreshToken = trimmed
+		}
+		if trimmed := strings.TrimSpace(refreshed.ClientID); trimmed != "" {
+			clientID = trimmed
+		}
+		if trimmed := strings.TrimSpace(refreshed.Email); trimmed != "" {
+			email = trimmed
+		}
+		if trimmed := strings.TrimSpace(refreshed.PlanType); trimmed != "" {
+			planType = trimmed
+		}
+		if trimmed := strings.TrimSpace(refreshed.OrganizationID); trimmed != "" {
+			organizationID = trimmed
+		}
+		if trimmed := strings.TrimSpace(refreshed.ChatGPTUserID); trimmed != "" {
+			chatGPTUserID = trimmed
+		}
+		if trimmed := strings.TrimSpace(refreshed.ChatGPTAccountID); trimmed != "" {
+			chatGPTAccountID = trimmed
+		}
+	}
+
 	if accessToken == "" && idToken != "" {
 		// codex-service-go treats id_token as a usable bearer fallback when access_token is absent.
 		accessToken = idToken
@@ -196,26 +260,22 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, option
 	if idToken != "" {
 		credentials["id_token"] = idToken
 	}
-	if clientID := openAIAuthImportString(payload, "client_id"); clientID != "" {
+	if clientID != "" {
 		credentials["client_id"] = clientID
 	}
-	if email := openAIAuthImportString(payload, "email"); email != "" {
+	if email != "" {
 		credentials["email"] = email
 	}
-	if planType := openAIAuthImportString(payload, "plan_type"); planType != "" {
+	if planType != "" {
 		credentials["plan_type"] = planType
 	}
-	if organizationID := openAIAuthImportString(payload, "organization_id"); organizationID != "" {
+	if organizationID != "" {
 		credentials["organization_id"] = organizationID
 	}
-	if chatGPTUserID := openAIAuthImportString(payload, "chatgpt_user_id"); chatGPTUserID != "" {
+	if chatGPTUserID != "" {
 		credentials["chatgpt_user_id"] = chatGPTUserID
 	}
 
-	chatGPTAccountID := openAIAuthImportString(payload, "chatgpt_account_id")
-	if chatGPTAccountID == "" {
-		chatGPTAccountID = openAIAuthImportString(payload, "account_id")
-	}
 	if chatGPTAccountID != "" {
 		credentials["chatgpt_account_id"] = chatGPTAccountID
 	}
@@ -248,6 +308,13 @@ func buildOpenAIAuthImportAccountInput(payload map[string]any, index int, option
 		GroupIDs:             cloneOpenAIRTImportGroupIDs(options.GroupIDs),
 		SkipDefaultGroupBind: true,
 	}, accountName, nil
+}
+
+func (h *AccountHandler) refreshOpenAIAuthImportTokens(ctx context.Context, refreshToken string, clientID string) (*service.OpenAITokenInfo, error) {
+	if h == nil || h.openaiOAuthService == nil {
+		return nil, errors.New("openai oauth service not available")
+	}
+	return h.openaiOAuthService.RefreshTokenWithClientID(ctx, refreshToken, "", clientID)
 }
 
 func overwriteOpenAIAuthImportPlanTypeFromIDToken(item *DataAccount) {
@@ -318,7 +385,7 @@ func decodeOpenAIAuthImportRequest(raw []byte) ([]json.RawMessage, openAIAuthImp
 		return nil, openAIAuthImportOptions{}, err
 	}
 
-	options, err := normalizeOpenAIAuthImportOptions(req.GroupIDs, req.NameTemplate)
+	options, err := normalizeOpenAIAuthImportOptions(req.GroupIDs, req.NameTemplate, req.RefreshBeforeImport)
 	if err != nil {
 		return nil, openAIAuthImportOptions{}, err
 	}
@@ -337,10 +404,14 @@ func parseOpenAIAuthImportFormOptions(c *gin.Context) (openAIAuthImportOptions, 
 	if err != nil {
 		return openAIAuthImportOptions{}, err
 	}
-	return normalizeOpenAIAuthImportOptions(groupIDs, c.PostForm("name_template"))
+	refreshBeforeImport, err := parseOpenAIAuthImportBool(c.PostForm("refresh_before_import"), "refresh_before_import")
+	if err != nil {
+		return openAIAuthImportOptions{}, err
+	}
+	return normalizeOpenAIAuthImportOptions(groupIDs, c.PostForm("name_template"), refreshBeforeImport)
 }
 
-func normalizeOpenAIAuthImportOptions(groupIDs []int64, nameTemplate string) (openAIAuthImportOptions, error) {
+func normalizeOpenAIAuthImportOptions(groupIDs []int64, nameTemplate string, refreshBeforeImport bool) (openAIAuthImportOptions, error) {
 	trimmedTemplate := strings.TrimSpace(nameTemplate)
 	if trimmedTemplate != "" {
 		if err := validateOpenAIAuthImportNameTemplate(trimmedTemplate); err != nil {
@@ -348,9 +419,22 @@ func normalizeOpenAIAuthImportOptions(groupIDs []int64, nameTemplate string) (op
 		}
 	}
 	return openAIAuthImportOptions{
-		GroupIDs:     normalizeOpenAIRTImportGroupIDs(groupIDs),
-		NameTemplate: trimmedTemplate,
+		GroupIDs:            normalizeOpenAIRTImportGroupIDs(groupIDs),
+		NameTemplate:        trimmedTemplate,
+		RefreshBeforeImport: refreshBeforeImport,
 	}, nil
+}
+
+func parseOpenAIAuthImportBool(raw string, fieldName string) (bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(trimmed)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean: %w", fieldName, err)
+	}
+	return value, nil
 }
 
 func parseOpenAIAuthImportGroupIDs(raw string) ([]int64, error) {

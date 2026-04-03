@@ -1808,6 +1808,8 @@ export default {
       openAIAuthImportJsonPlaceholder: 'Paste a JSON array here. See the example above.',
       openAIAuthImportGroupTitle: 'Bind groups after import',
       openAIAuthImportGroupHint: 'Bind all imported accounts to selected OpenAI groups. Leave empty to keep them ungrouped.',
+      openAIAuthImportRefreshBeforeImport: 'Refresh credentials before import',
+      openAIAuthImportRefreshBeforeImportHint: 'Disabled by default. When enabled, each record is refreshed once with its refresh_token and the latest id_token/access_token is imported; records that fail to refresh will fail the import.',
       openAIAuthImportNameTemplate: 'Account name template',
       openAIAuthImportNameTemplatePlaceholder: 'Leave empty to use the default naming rule, e.g. {plan_type}-{email}',
       openAIAuthImportNameTemplateHint: 'Click placeholders below to compose a template. {index} is the 1-based sequence in this import; the other fields come from auth.json or the id_token payload.',

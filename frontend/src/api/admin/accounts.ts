@@ -536,6 +536,7 @@ export async function importOpenAIAuthItems(
   options?: {
     group_ids?: number[]
     name_template?: string
+    refresh_before_import?: boolean
   }
 ): Promise<AdminOpenAIAuthImportResult> {
   const payload: AdminOpenAIAuthImportRequest = {
@@ -546,6 +547,9 @@ export async function importOpenAIAuthItems(
   }
   if (options?.name_template?.trim()) {
     payload.name_template = options.name_template.trim()
+  }
+  if (options?.refresh_before_import) {
+    payload.refresh_before_import = true
   }
 
   const { data } = await apiClient.post<AdminOpenAIAuthImportResult>(
@@ -560,6 +564,7 @@ export async function importOpenAIAuthFile(
   options?: {
     group_ids?: number[]
     name_template?: string
+    refresh_before_import?: boolean
   }
 ): Promise<AdminOpenAIAuthImportResult> {
   const formData = new FormData()
@@ -569,6 +574,9 @@ export async function importOpenAIAuthFile(
   }
   if (options?.name_template?.trim()) {
     formData.append('name_template', options.name_template.trim())
+  }
+  if (options?.refresh_before_import) {
+    formData.append('refresh_before_import', 'true')
   }
 
   const { data } = await apiClient.post<AdminOpenAIAuthImportResult>(

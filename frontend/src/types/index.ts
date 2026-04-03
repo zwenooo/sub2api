@@ -954,6 +954,7 @@ export interface AdminOpenAIAuthImportRequest {
   items: AdminOpenAIAuthImportSource[]
   group_ids?: number[]
   name_template?: string
+  refresh_before_import?: boolean
 }
 
 export interface AdminOpenAIAuthImportError {
