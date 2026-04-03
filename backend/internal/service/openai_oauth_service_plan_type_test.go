@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -37,31 +35,12 @@ func (s *openaiOAuthClientPlanStub) RefreshTokenWithClientID(ctx context.Context
 	return s.refreshResp, nil
 }
 
-func TestOpenAIOAuthService_ExchangeCode_PrefersAccountCheckPlanType(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodGet, r.Method)
-		require.Equal(t, "Bearer at-exchange", r.Header.Get("Authorization"))
-		require.Equal(t, "acct-exchange", r.Header.Get("chatgpt-account-id"))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"account_ordering":["acct-exchange"],
-			"accounts":{
-				"default":{"account":{"account_id":"acct-exchange"},"entitlement":{"subscription_plan":"chatgptplusplan"}},
-				"acct-exchange":{"account":{"account_id":"acct-exchange"},"entitlement":{"subscription_plan":"chatgptplusplan"}}
-			}
-		}`))
-	}))
-	defer server.Close()
-
-	origin := openAIAccountsCheckURL
-	openAIAccountsCheckURL = server.URL
-	defer func() { openAIAccountsCheckURL = origin }()
-
+func TestOpenAIOAuthService_ExchangeCode_UsesIDTokenPlanType(t *testing.T) {
 	client := &openaiOAuthClientPlanStub{
 		exchangeResp: &openai.TokenResponse{
 			AccessToken:  "at-exchange",
 			RefreshToken: "rt-exchange",
-			IDToken:      buildOpenAIIDTokenForTest(t, "acct-exchange", "free", "plus@example.com"),
+			IDToken:      buildOpenAIIDTokenForTest(t, "acct-exchange", "plus", "plus@example.com"),
 			ExpiresIn:    3600,
 		},
 	}
@@ -88,29 +67,12 @@ func TestOpenAIOAuthService_ExchangeCode_PrefersAccountCheckPlanType(t *testing.
 	require.Equal(t, "plus@example.com", info.Email)
 }
 
-func TestOpenAIOAuthService_RefreshTokenWithClientID_PrefersAccountCheckPlanType(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodGet, r.Method)
-		require.Equal(t, "Bearer at-refresh", r.Header.Get("Authorization"))
-		require.Equal(t, "acct-refresh", r.Header.Get("chatgpt-account-id"))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"accounts":{
-				"default":{"account":{"account_id":"acct-refresh"},"entitlement":{"subscription_plan":"chatgptteamplan"}}
-			}
-		}`))
-	}))
-	defer server.Close()
-
-	origin := openAIAccountsCheckURL
-	openAIAccountsCheckURL = server.URL
-	defer func() { openAIAccountsCheckURL = origin }()
-
+func TestOpenAIOAuthService_RefreshTokenWithClientID_UsesIDTokenPlanType(t *testing.T) {
 	client := &openaiOAuthClientPlanStub{
 		refreshResp: &openai.TokenResponse{
 			AccessToken:  "at-refresh",
 			RefreshToken: "rt-refresh",
-			IDToken:      buildOpenAIIDTokenForTest(t, "acct-refresh", "free", "team@example.com"),
+			IDToken:      buildOpenAIIDTokenForTest(t, "acct-refresh", "team", "team@example.com"),
 			ExpiresIn:    1800,
 		},
 	}
@@ -124,29 +86,12 @@ func TestOpenAIOAuthService_RefreshTokenWithClientID_PrefersAccountCheckPlanType
 	require.Equal(t, "acct-refresh", info.ChatGPTAccountID)
 }
 
-func TestOpenAIOAuthService_RefreshAccountToken_UsesExistingAccountIDHintForPlanType(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodGet, r.Method)
-		require.Equal(t, "Bearer at-account-refresh", r.Header.Get("Authorization"))
-		require.Equal(t, "acct-account-refresh", r.Header.Get("chatgpt-account-id"))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"accounts":{
-				"acct-account-refresh":{"account":{"account_id":"acct-account-refresh"},"entitlement":{"subscription_plan":"chatgptplusplan"}}
-			},
-			"account_ordering":["acct-account-refresh"]
-		}`))
-	}))
-	defer server.Close()
-
-	origin := openAIAccountsCheckURL
-	openAIAccountsCheckURL = server.URL
-	defer func() { openAIAccountsCheckURL = origin }()
-
+func TestOpenAIOAuthService_RefreshAccountToken_UsesRefreshedIDTokenPlanType(t *testing.T) {
 	client := &openaiOAuthClientPlanStub{
 		refreshResp: &openai.TokenResponse{
 			AccessToken:  "at-account-refresh",
 			RefreshToken: "rt-account-refresh",
+			IDToken:      buildOpenAIIDTokenForTest(t, "acct-account-refresh", "pro", "pro@example.com"),
 			ExpiresIn:    900,
 		},
 	}
@@ -166,7 +111,7 @@ func TestOpenAIOAuthService_RefreshAccountToken_UsesExistingAccountIDHintForPlan
 	info, err := svc.RefreshAccountToken(context.Background(), account)
 	require.NoError(t, err)
 	require.NotNil(t, info)
-	require.Equal(t, "plus", info.PlanType)
+	require.Equal(t, "pro", info.PlanType)
 	require.Equal(t, "acct-account-refresh", info.ChatGPTAccountID)
 }
 

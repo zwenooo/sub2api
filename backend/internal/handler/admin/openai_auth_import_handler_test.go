@@ -2,12 +2,13 @@ package admin
 
 import (
 	"bytes"
-	"context"
+	"encoding/base64"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -260,32 +261,40 @@ func TestImportOpenAIAuthJSONFailsWhenTemplateFieldMissing(t *testing.T) {
 	require.Empty(t, adminSvc.createdAccounts)
 }
 
-func TestBuildOpenAIAuthImportAccountInputPrefersResolvedPlanType(t *testing.T) {
+func TestBuildOpenAIAuthImportAccountInputPrefersIDTokenPlanType(t *testing.T) {
 	payload := map[string]any{
 		"tokens": map[string]any{
 			"access_token":  "at-live",
 			"refresh_token": "rt-live",
 			"account_id":    "acct-live",
+			"id_token":      buildOpenAIAuthImportIDTokenForTest(t, "acct-live", "plus", "plus@example.com"),
 		},
 		"email":     "plus@example.com",
 		"plan_type": "free",
 	}
 
-	input, accountName, err := buildOpenAIAuthImportAccountInput(
-		context.Background(),
-		payload,
-		0,
-		openAIAuthImportOptions{NameTemplate: "{plan_type}-{email}"},
-		func(ctx context.Context, accessToken string, accountIDHint string) (string, string, error) {
-			require.Equal(t, "at-live", accessToken)
-			require.Equal(t, "acct-live", accountIDHint)
-			return "plus", "acct-live", nil
-		},
-	)
+	input, accountName, err := buildOpenAIAuthImportAccountInput(payload, 0, openAIAuthImportOptions{NameTemplate: "{plan_type}-{email}"})
 	require.NoError(t, err)
 	require.NotNil(t, input)
 	require.Equal(t, "plus-plus@example.com", accountName)
 	require.Equal(t, "plus-plus@example.com", input.Name)
 	require.Equal(t, "plus", input.Credentials["plan_type"])
 	require.Equal(t, "acct-live", input.Credentials["chatgpt_account_id"])
+}
+
+func buildOpenAIAuthImportIDTokenForTest(t *testing.T, accountID, planType, email string) string {
+	t.Helper()
+
+	claims := map[string]any{
+		"email": email,
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+			"chatgpt_plan_type":  planType,
+		},
+	}
+	payload, err := json.Marshal(claims)
+	require.NoError(t, err)
+
+	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }

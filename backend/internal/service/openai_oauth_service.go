@@ -19,7 +19,6 @@ import (
 )
 
 var openAISoraSessionAuthURL = "https://sora.chatgpt.com/api/auth/session"
-var openAIAccountsCheckURL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 
 var soraSessionCookiePattern = regexp.MustCompile(`(?i)(?:^|[\n\r;])\s*(?:(?:set-cookie|cookie)\s*:\s*)?__Secure-(?:next-auth|authjs)\.session-token(?:\.(\d+))?=([^;\r\n]+)`)
 
@@ -134,20 +133,6 @@ type OpenAITokenInfo struct {
 	PlanType         string `json:"plan_type,omitempty"`
 }
 
-type openAIAccountsCheckResponse struct {
-	AccountOrdering []string                        `json:"account_ordering"`
-	Accounts        map[string]openAIAccountsRecord `json:"accounts"`
-}
-
-type openAIAccountsRecord struct {
-	Account struct {
-		AccountID string `json:"account_id"`
-	} `json:"account"`
-	Entitlement struct {
-		SubscriptionPlan string `json:"subscription_plan"`
-	} `json:"entitlement"`
-}
-
 // ExchangeCode exchanges authorization code for tokens
 func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExchangeCodeInput) (*OpenAITokenInfo, error) {
 	// Get session
@@ -220,7 +205,6 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		tokenInfo.OrganizationID = userInfo.OrganizationID
 		tokenInfo.PlanType = userInfo.PlanType
 	}
-	s.enrichTokenInfoPlanTypeFromAccountCheck(ctx, tokenInfo, proxyURL, "")
 
 	return tokenInfo, nil
 }
@@ -232,10 +216,6 @@ func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken stri
 
 // RefreshTokenWithClientID refreshes an OpenAI/Sora OAuth token with optional client_id.
 func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refreshToken string, proxyURL string, clientID string) (*OpenAITokenInfo, error) {
-	return s.refreshTokenWithClientIDAndAccountHint(ctx, refreshToken, proxyURL, clientID, "")
-}
-
-func (s *OpenAIOAuthService) refreshTokenWithClientIDAndAccountHint(ctx context.Context, refreshToken string, proxyURL string, clientID string, accountIDHint string) (*OpenAITokenInfo, error) {
 	tokenResp, err := s.oauthClient.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
 	if err != nil {
 		return nil, err
@@ -270,7 +250,6 @@ func (s *OpenAIOAuthService) refreshTokenWithClientIDAndAccountHint(ctx context.
 		tokenInfo.OrganizationID = userInfo.OrganizationID
 		tokenInfo.PlanType = userInfo.PlanType
 	}
-	s.enrichTokenInfoPlanTypeFromAccountCheck(ctx, tokenInfo, proxyURL, accountIDHint)
 
 	return tokenInfo, nil
 }
@@ -512,7 +491,7 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	}
 
 	clientID := account.GetCredential("client_id")
-	return s.refreshTokenWithClientIDAndAccountHint(ctx, refreshToken, proxyURL, clientID, account.GetChatGPTAccountID())
+	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
 }
 
 // BuildAccountCredentials builds credentials map from token info
@@ -573,157 +552,6 @@ func (s *OpenAIOAuthService) resolveProxyURL(ctx context.Context, proxyID *int64
 		return "", nil
 	}
 	return proxy.URL(), nil
-}
-
-func (s *OpenAIOAuthService) enrichTokenInfoPlanTypeFromAccountCheck(ctx context.Context, tokenInfo *OpenAITokenInfo, proxyURL string, accountIDHint string) {
-	if tokenInfo == nil || strings.TrimSpace(tokenInfo.AccessToken) == "" {
-		return
-	}
-
-	lookupAccountID := strings.TrimSpace(tokenInfo.ChatGPTAccountID)
-	if lookupAccountID == "" {
-		lookupAccountID = strings.TrimSpace(accountIDHint)
-	}
-	if lookupAccountID == "" && strings.TrimSpace(tokenInfo.PlanType) == "" {
-		return
-	}
-
-	resolvedPlanType, resolvedAccountID, err := s.resolveOpenAIPlanType(ctx, tokenInfo.AccessToken, proxyURL, lookupAccountID)
-	if err != nil {
-		slog.Warn("openai_oauth_account_check_failed", "error", err, "chatgpt_account_id", lookupAccountID)
-		return
-	}
-
-	if resolvedPlanType != "" {
-		tokenInfo.PlanType = resolvedPlanType
-	}
-	if tokenInfo.ChatGPTAccountID == "" && resolvedAccountID != "" {
-		tokenInfo.ChatGPTAccountID = resolvedAccountID
-	}
-}
-
-func (s *OpenAIOAuthService) resolveOpenAIPlanType(ctx context.Context, accessToken string, proxyURL string, accountIDHint string) (string, string, error) {
-	if strings.TrimSpace(accessToken) == "" {
-		return "", "", nil
-	}
-
-	client, err := httpclient.GetClient(httpclient.Options{
-		ProxyURL:              proxyURL,
-		Timeout:               15 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-	})
-	if err != nil {
-		return "", "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIAccountsCheckURL, nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Origin", "https://chatgpt.com")
-	req.Header.Set("Referer", "https://chatgpt.com/")
-	if trimmed := strings.TrimSpace(accountIDHint); trimmed != "" {
-		req.Header.Set("chatgpt-account-id", trimmed)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return "", "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", "", infraerrors.Newf(http.StatusBadGateway, "OPENAI_ACCOUNT_CHECK_FAILED", "status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var parsed openAIAccountsCheckResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", "", err
-	}
-
-	accountRecord, ok := selectOpenAIAccountsRecord(parsed, accountIDHint)
-	if !ok {
-		return "", "", infraerrors.New(http.StatusBadGateway, "OPENAI_ACCOUNT_CHECK_EMPTY", "accounts check response did not contain an account record")
-	}
-
-	return normalizeOpenAIEntitlementPlanType(accountRecord.Entitlement.SubscriptionPlan), strings.TrimSpace(accountRecord.Account.AccountID), nil
-}
-
-// ResolvePlanTypeFromAccessToken resolves the authoritative ChatGPT subscription plan
-// for the current access token.
-func (s *OpenAIOAuthService) ResolvePlanTypeFromAccessToken(ctx context.Context, accessToken string, proxyURL string, accountIDHint string) (string, string, error) {
-	return s.resolveOpenAIPlanType(ctx, accessToken, proxyURL, accountIDHint)
-}
-
-func selectOpenAIAccountsRecord(resp openAIAccountsCheckResponse, accountIDHint string) (openAIAccountsRecord, bool) {
-	if len(resp.Accounts) == 0 {
-		return openAIAccountsRecord{}, false
-	}
-
-	if trimmedHint := strings.TrimSpace(accountIDHint); trimmedHint != "" {
-		for _, record := range resp.Accounts {
-			if strings.EqualFold(strings.TrimSpace(record.Account.AccountID), trimmedHint) {
-				return record, true
-			}
-		}
-	}
-
-	if record, ok := resp.Accounts["default"]; ok {
-		return record, true
-	}
-
-	for _, key := range resp.AccountOrdering {
-		if record, ok := resp.Accounts[key]; ok {
-			return record, true
-		}
-	}
-
-	for key, record := range resp.Accounts {
-		if key != "default" {
-			return record, true
-		}
-	}
-
-	for _, record := range resp.Accounts {
-		return record, true
-	}
-
-	return openAIAccountsRecord{}, false
-}
-
-func normalizeOpenAIEntitlementPlanType(raw string) string {
-	normalized := strings.ToLower(strings.TrimSpace(raw))
-	if normalized == "" {
-		return ""
-	}
-
-	replacer := strings.NewReplacer("-", "", "_", "", " ", "")
-	compact := replacer.Replace(normalized)
-
-	switch compact {
-	case "chatgptfree", "chatgptfreeplan", "free":
-		return "free"
-	case "chatgptplus", "chatgptplusplan", "plus":
-		return "plus"
-	case "chatgptteam", "chatgptteamplan", "team":
-		return "team"
-	case "chatgptpro", "chatgptproplan", "pro":
-		return "pro"
-	}
-
-	trimmed := strings.TrimPrefix(compact, "chatgpt")
-	trimmed = strings.TrimSuffix(trimmed, "plan")
-	if trimmed != "" {
-		return trimmed
-	}
-
-	return normalized
 }
 
 func normalizeOpenAIOAuthPlatform(platform string) string {
