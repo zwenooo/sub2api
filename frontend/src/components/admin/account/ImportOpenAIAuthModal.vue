@@ -331,7 +331,7 @@ const selectedTemplatePreset = ref(defaultNameTemplatePresetValue)
 const nameTemplate = ref('')
 const refreshBeforeImport = ref(false)
 const proxyID = ref<number | null>(null)
-const autoPauseOnExpired = ref(false)
+const autoPauseOnExpired = ref(true)
 const openAIPassthrough = ref(false)
 const openAIWSMode = ref<OpenAIWSMode | ''>('')
 const codexCLIOnly = ref(false)
@@ -414,7 +414,7 @@ watch(
     nameTemplate.value = ''
     refreshBeforeImport.value = false
     proxyID.value = null
-    autoPauseOnExpired.value = false
+    autoPauseOnExpired.value = true
     openAIPassthrough.value = false
     openAIWSMode.value = ''
     codexCLIOnly.value = false
@@ -473,7 +473,7 @@ const handleImport = async () => {
         name_template: nameTemplate.value,
         refresh_before_import: refreshBeforeImport.value,
         proxy_id: proxyID.value,
-        auto_pause_on_expired: autoPauseOnExpired.value ? true : undefined,
+        auto_pause_on_expired: autoPauseOnExpired.value,
         openai_passthrough: openAIPassthrough.value ? true : undefined,
         openai_ws_mode: openAIWSMode.value,
         codex_cli_only: codexCLIOnly.value ? true : undefined
@@ -504,7 +504,7 @@ const handleImport = async () => {
           name_template: nameTemplate.value,
           refresh_before_import: refreshBeforeImport.value,
           proxy_id: proxyID.value,
-          auto_pause_on_expired: autoPauseOnExpired.value ? true : undefined,
+          auto_pause_on_expired: autoPauseOnExpired.value,
           openai_passthrough: openAIPassthrough.value ? true : undefined,
           openai_ws_mode: openAIWSMode.value,
           codex_cli_only: codexCLIOnly.value ? true : undefined
