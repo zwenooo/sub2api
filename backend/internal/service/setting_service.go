@@ -1424,6 +1424,46 @@ func (s *SettingService) SetOpenAIAutoDisableSettings(ctx context.Context, setti
 	return s.settingRepo.Set(ctx, SettingKeyOpenAIAutoDisableSettings, string(data))
 }
 
+// GetOpenAIRateLimitRecoverySettings 获取 OpenAI 限流恢复自测配置。
+func (s *SettingService) GetOpenAIRateLimitRecoverySettings(ctx context.Context) (*OpenAIRateLimitRecoverySettings, error) {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAIRateLimitRecoverySettings)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return DefaultOpenAIRateLimitRecoverySettings(), nil
+		}
+		return nil, fmt.Errorf("get openai rate limit recovery settings: %w", err)
+	}
+	if value == "" {
+		return DefaultOpenAIRateLimitRecoverySettings(), nil
+	}
+
+	var settings OpenAIRateLimitRecoverySettings
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return DefaultOpenAIRateLimitRecoverySettings(), nil
+	}
+
+	normalized, err := normalizeOpenAIRateLimitRecoverySettings(&settings)
+	if err != nil {
+		return DefaultOpenAIRateLimitRecoverySettings(), nil
+	}
+	return normalized, nil
+}
+
+// SetOpenAIRateLimitRecoverySettings 设置 OpenAI 限流恢复自测配置。
+func (s *SettingService) SetOpenAIRateLimitRecoverySettings(ctx context.Context, settings *OpenAIRateLimitRecoverySettings) error {
+	normalized, err := normalizeOpenAIRateLimitRecoverySettings(settings)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(normalized)
+	if err != nil {
+		return fmt.Errorf("marshal openai rate limit recovery settings: %w", err)
+	}
+
+	return s.settingRepo.Set(ctx, SettingKeyOpenAIRateLimitRecoverySettings, string(data))
+}
+
 func normalizeOpenAIAutoDisableSettings(settings *OpenAIAutoDisableSettings) (*OpenAIAutoDisableSettings, error) {
 	if settings == nil {
 		return nil, fmt.Errorf("settings cannot be nil")
@@ -1472,6 +1512,27 @@ func normalizeOpenAIAutoDisableSettings(settings *OpenAIAutoDisableSettings) (*O
 
 	if normalized.Enabled && len(normalized.Rules) == 0 {
 		return nil, fmt.Errorf("at least one rule is required when enabled")
+	}
+
+	return normalized, nil
+}
+
+func normalizeOpenAIRateLimitRecoverySettings(settings *OpenAIRateLimitRecoverySettings) (*OpenAIRateLimitRecoverySettings, error) {
+	if settings == nil {
+		return nil, fmt.Errorf("settings cannot be nil")
+	}
+
+	normalized := &OpenAIRateLimitRecoverySettings{
+		Enabled:              settings.Enabled,
+		TestModel:            strings.TrimSpace(settings.TestModel),
+		CheckIntervalMinutes: settings.CheckIntervalMinutes,
+	}
+
+	if normalized.TestModel == "" {
+		return nil, fmt.Errorf("test_model cannot be empty")
+	}
+	if normalized.CheckIntervalMinutes < 1 || normalized.CheckIntervalMinutes > 1440 {
+		return nil, fmt.Errorf("check_interval_minutes must be between 1 and 1440")
 	}
 
 	return normalized, nil

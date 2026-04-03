@@ -186,6 +186,13 @@ type BetaPolicySettings struct {
 	Rules []BetaPolicyRule `json:"rules"`
 }
 
+// OpenAIRateLimitRecoverySettings OpenAI 限流恢复自测配置 DTO
+type OpenAIRateLimitRecoverySettings struct {
+	Enabled              bool   `json:"enabled"`
+	TestModel            string `json:"test_model"`
+	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+}
+
 // ParseCustomMenuItems parses a JSON string into a slice of CustomMenuItem.
 // Returns empty slice on empty/invalid input.
 func ParseCustomMenuItems(raw string) []CustomMenuItem {

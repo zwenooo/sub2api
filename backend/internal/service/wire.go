@@ -211,6 +211,18 @@ func ProvideOpsCleanupService(
 	return svc
 }
 
+// ProvideOpenAIRateLimitRecoveryService creates and starts OpenAIRateLimitRecoveryService.
+func ProvideOpenAIRateLimitRecoveryService(
+	accountRepo AccountRepository,
+	accountTestSvc *AccountTestService,
+	rateLimitSvc *RateLimitService,
+	settingService *SettingService,
+) *OpenAIRateLimitRecoveryService {
+	svc := NewOpenAIRateLimitRecoveryService(accountRepo, accountTestSvc, rateLimitSvc, settingService)
+	svc.Start()
+	return svc
+}
+
 func ProvideOpsSystemLogSink(opsRepo OpsRepository) *OpsSystemLogSink {
 	sink := NewOpsSystemLogSink(opsRepo)
 	sink.Start()
@@ -425,4 +437,5 @@ var ProviderSet = wire.NewSet(
 	ProvideIdempotencyCleanupService,
 	ProvideScheduledTestService,
 	ProvideScheduledTestRunnerService,
+	ProvideOpenAIRateLimitRecoveryService,
 )

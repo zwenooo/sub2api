@@ -198,6 +198,9 @@ const (
 	// SettingKeyOpenAIAutoDisableSettings stores JSON config for OpenAI upstream auto-disable rules.
 	SettingKeyOpenAIAutoDisableSettings = "openai_auto_disable_settings"
 
+	// SettingKeyOpenAIRateLimitRecoverySettings stores JSON config for OpenAI rate-limit recovery self-test.
+	SettingKeyOpenAIRateLimitRecoverySettings = "openai_rate_limit_recovery_settings"
+
 	// =========================
 	// Sora S3 存储配置
 	// =========================

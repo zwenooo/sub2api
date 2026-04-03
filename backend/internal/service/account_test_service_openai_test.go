@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -63,6 +64,9 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 	require.NotEmpty(t, repo.updatedExtra)
 	require.Equal(t, 42.0, repo.updatedExtra["codex_5h_used_percent"])
 	require.Equal(t, 88.0, repo.updatedExtra["codex_7d_used_percent"])
+	require.Zero(t, repo.rateLimitedID)
+	require.Nil(t, repo.rateLimitedAt)
+	require.Nil(t, account.RateLimitResetAt)
 	require.Contains(t, recorder.Body.String(), "test_complete")
 }
 
@@ -99,4 +103,31 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimit(t *testing.T) 
 	if account.RateLimitResetAt != nil && repo.rateLimitedAt != nil {
 		require.WithinDuration(t, *repo.rateLimitedAt, *account.RateLimitResetAt, time.Second)
 	}
+}
+
+func TestAccountTestService_OpenAI429FallsBackToBodyResetAt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newSoraTestContext()
+
+	resetAt := time.Now().Add(25 * time.Minute).UTC().Truncate(time.Second)
+	resp := newJSONResponse(http.StatusTooManyRequests, fmt.Sprintf(`{"error":{"type":"usage_limit_reached","message":"limit reached","resets_at":%d}}`, resetAt.Unix()))
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{
+		ID:          91,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.Error(t, err)
+	require.Equal(t, int64(91), repo.rateLimitedID)
+	require.NotNil(t, repo.rateLimitedAt)
+	require.WithinDuration(t, resetAt, *repo.rateLimitedAt, time.Second)
+	require.NotNil(t, account.RateLimitResetAt)
+	require.WithinDuration(t, resetAt, *account.RateLimitResetAt, time.Second)
 }

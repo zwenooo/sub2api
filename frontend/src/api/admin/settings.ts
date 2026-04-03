@@ -253,6 +253,12 @@ export interface StreamTimeoutSettings {
   threshold_window_minutes: number
 }
 
+export interface OpenAIRateLimitRecoverySettings {
+  enabled: boolean
+  test_model: string
+  check_interval_minutes: number
+}
+
 /**
  * Get stream timeout settings
  * @returns Stream timeout settings
@@ -272,6 +278,21 @@ export async function updateStreamTimeoutSettings(
 ): Promise<StreamTimeoutSettings> {
   const { data } = await apiClient.put<StreamTimeoutSettings>(
     '/admin/settings/stream-timeout',
+    settings
+  )
+  return data
+}
+
+export async function getOpenAIRateLimitRecoverySettings(): Promise<OpenAIRateLimitRecoverySettings> {
+  const { data } = await apiClient.get<OpenAIRateLimitRecoverySettings>('/admin/settings/openai-rate-limit-recovery')
+  return data
+}
+
+export async function updateOpenAIRateLimitRecoverySettings(
+  settings: OpenAIRateLimitRecoverySettings
+): Promise<OpenAIRateLimitRecoverySettings> {
+  const { data } = await apiClient.put<OpenAIRateLimitRecoverySettings>(
+    '/admin/settings/openai-rate-limit-recovery',
     settings
   )
   return data
@@ -501,6 +522,8 @@ export const settingsAPI = {
   deleteAdminApiKey,
   getStreamTimeoutSettings,
   updateStreamTimeoutSettings,
+  getOpenAIRateLimitRecoverySettings,
+  updateOpenAIRateLimitRecoverySettings,
   getRectifierSettings,
   updateRectifierSettings,
   getBetaPolicySettings,

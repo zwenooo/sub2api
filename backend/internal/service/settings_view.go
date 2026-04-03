@@ -1,5 +1,7 @@
 package service
 
+import "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+
 type SystemSettings struct {
 	RegistrationEnabled              bool
 	EmailVerifyEnabled               bool
@@ -236,11 +238,27 @@ type OpenAIAutoDisableSettings struct {
 	Rules   []OpenAIAutoDisableRule `json:"rules"`
 }
 
+// OpenAIRateLimitRecoverySettings OpenAI 限流恢复自测配置。
+type OpenAIRateLimitRecoverySettings struct {
+	Enabled              bool   `json:"enabled"`
+	TestModel            string `json:"test_model"`
+	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+}
+
 // DefaultOpenAIAutoDisableSettings 返回默认的 OpenAI 自动禁用规则配置。
 func DefaultOpenAIAutoDisableSettings() *OpenAIAutoDisableSettings {
 	return &OpenAIAutoDisableSettings{
 		Enabled: false,
 		Rules:   []OpenAIAutoDisableRule{},
+	}
+}
+
+// DefaultOpenAIRateLimitRecoverySettings 返回默认的 OpenAI 限流恢复自测配置。
+func DefaultOpenAIRateLimitRecoverySettings() *OpenAIRateLimitRecoverySettings {
+	return &OpenAIRateLimitRecoverySettings{
+		Enabled:              false,
+		TestModel:            openai.DefaultTestModel,
+		CheckIntervalMinutes: 10,
 	}
 }
 

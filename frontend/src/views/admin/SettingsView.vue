@@ -308,6 +308,102 @@
           </div>
         </div>
 
+        <!-- OpenAI Rate Limit Recovery Settings -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.openAIRateLimitRecovery.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.openAIRateLimitRecovery.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div v-if="openAIRateLimitRecoveryLoading" class="flex items-center gap-2 text-gray-500">
+              <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+              {{ t('common.loading') }}
+            </div>
+
+            <template v-else>
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{
+                    t('admin.settings.openAIRateLimitRecovery.enabled')
+                  }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openAIRateLimitRecovery.enabledHint') }}
+                  </p>
+                </div>
+                <Toggle v-model="openAIRateLimitRecoveryForm.enabled" />
+              </div>
+
+              <div class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.openAIRateLimitRecovery.testModel') }}
+                  </label>
+                  <input
+                    v-model.trim="openAIRateLimitRecoveryForm.test_model"
+                    type="text"
+                    class="input w-full max-w-md"
+                    :placeholder="t('admin.settings.openAIRateLimitRecovery.testModelPlaceholder')"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openAIRateLimitRecovery.testModelHint') }}
+                  </p>
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.openAIRateLimitRecovery.checkIntervalMinutes') }}
+                  </label>
+                  <input
+                    v-model.number="openAIRateLimitRecoveryForm.check_interval_minutes"
+                    type="number"
+                    min="1"
+                    max="1440"
+                    class="input w-32"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openAIRateLimitRecovery.checkIntervalMinutesHint') }}
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                <button
+                  type="button"
+                  @click="saveOpenAIRateLimitRecoverySettings"
+                  :disabled="openAIRateLimitRecoverySaving"
+                  class="btn btn-primary btn-sm"
+                >
+                  <svg
+                    v-if="openAIRateLimitRecoverySaving"
+                    class="mr-1 h-4 w-4 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      stroke-width="4"
+                    ></circle>
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                  {{ openAIRateLimitRecoverySaving ? t('common.saving') : t('common.save') }}
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <!-- Request Rectifier Settings -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -1711,7 +1807,8 @@ import { adminAPI } from '@/api'
 import type {
   SystemSettings,
   UpdateSettingsRequest,
-  DefaultSubscriptionSetting
+  DefaultSubscriptionSetting,
+  OpenAIRateLimitRecoverySettings
 } from '@/api/admin/settings'
 import type { AdminGroup } from '@/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -1775,6 +1872,15 @@ const streamTimeoutForm = reactive({
   temp_unsched_minutes: 5,
   threshold_count: 3,
   threshold_window_minutes: 10
+})
+
+// OpenAI Rate Limit Recovery 状态
+const openAIRateLimitRecoveryLoading = ref(true)
+const openAIRateLimitRecoverySaving = ref(false)
+const openAIRateLimitRecoveryForm = reactive<OpenAIRateLimitRecoverySettings>({
+  enabled: false,
+  test_model: 'gpt-5.1-codex',
+  check_interval_minutes: 10
 })
 
 // Rectifier 状态
@@ -2309,6 +2415,51 @@ async function saveStreamTimeoutSettings() {
   }
 }
 
+async function loadOpenAIRateLimitRecoverySettings() {
+  openAIRateLimitRecoveryLoading.value = true
+  try {
+    const settings = await adminAPI.settings.getOpenAIRateLimitRecoverySettings()
+    Object.assign(openAIRateLimitRecoveryForm, settings)
+  } catch (error) {
+    console.error('Failed to load OpenAI rate limit recovery settings:', error)
+  } finally {
+    openAIRateLimitRecoveryLoading.value = false
+  }
+}
+
+async function saveOpenAIRateLimitRecoverySettings() {
+  const testModel = openAIRateLimitRecoveryForm.test_model.trim()
+  const interval = Math.floor(Number(openAIRateLimitRecoveryForm.check_interval_minutes))
+
+  if (!testModel) {
+    appStore.showError(t('admin.settings.openAIRateLimitRecovery.testModelRequired'))
+    return
+  }
+  if (!Number.isFinite(interval) || interval < 1 || interval > 1440) {
+    appStore.showError(t('admin.settings.openAIRateLimitRecovery.checkIntervalMinutesInvalid'))
+    return
+  }
+
+  openAIRateLimitRecoverySaving.value = true
+  try {
+    const updated = await adminAPI.settings.updateOpenAIRateLimitRecoverySettings({
+      enabled: openAIRateLimitRecoveryForm.enabled,
+      test_model: testModel,
+      check_interval_minutes: interval
+    })
+    Object.assign(openAIRateLimitRecoveryForm, updated)
+    appStore.showSuccess(t('admin.settings.openAIRateLimitRecovery.saved'))
+  } catch (error: any) {
+    appStore.showError(
+      t('admin.settings.openAIRateLimitRecovery.saveFailed') +
+        ': ' +
+        (error.message || t('common.unknownError'))
+    )
+  } finally {
+    openAIRateLimitRecoverySaving.value = false
+  }
+}
+
 // Rectifier 方法
 async function loadRectifierSettings() {
   rectifierLoading.value = true
@@ -2398,6 +2549,7 @@ onMounted(() => {
   loadSubscriptionGroups()
   loadAdminApiKey()
   loadStreamTimeoutSettings()
+  loadOpenAIRateLimitRecoverySettings()
   loadRectifierSettings()
   loadBetaPolicySettings()
 })

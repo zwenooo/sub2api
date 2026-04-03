@@ -4329,6 +4329,21 @@ export default {
         saved: 'Stream timeout settings saved',
         saveFailed: 'Failed to save stream timeout settings'
       },
+      openAIRateLimitRecovery: {
+        title: 'OpenAI Rate Limit Recovery',
+        description: 'OpenAI platform only. When an account enters rate-limited state because of a real 429, the system periodically runs an upstream self-test and clears the rate limit as soon as the test succeeds.',
+        enabled: 'Enable Automatic Recovery Checks',
+        enabledHint: 'Periodically re-test rate-limited OpenAI accounts and return them to scheduling when the upstream test succeeds',
+        testModel: 'Test Model',
+        testModelPlaceholder: 'For example: gpt-5.1-codex',
+        testModelHint: 'All OpenAI rate-limited accounts share this default test model',
+        testModelRequired: 'Test model is required',
+        checkIntervalMinutes: 'Check Interval (minutes)',
+        checkIntervalMinutesHint: 'How often to run a recovery round for currently rate-limited OpenAI accounts. Range: 1-1440 minutes',
+        checkIntervalMinutesInvalid: 'Check interval must be between 1 and 1440 minutes',
+        saved: 'OpenAI rate limit recovery settings saved',
+        saveFailed: 'Failed to save OpenAI rate limit recovery settings'
+      },
       rectifier: {
         title: 'Request Rectifier',
         description: 'Automatically fix request parameters and retry when upstream returns specific errors',

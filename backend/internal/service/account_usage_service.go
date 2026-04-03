@@ -404,7 +404,6 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	if account == nil {
 		return usage, nil
 	}
-	syncOpenAICodexRateLimitFromExtra(ctx, s.accountRepo, account, now)
 
 	if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
 		usage.FiveHour = progress
@@ -416,9 +415,6 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account.ID, now) {
 		if updates, resetAt, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && (len(updates) > 0 || resetAt != nil) {
 			mergeAccountExtra(account, updates)
-			if resetAt != nil {
-				account.RateLimitResetAt = resetAt
-			}
 			if usage.UpdatedAt == nil {
 				usage.UpdatedAt = &now
 			}
@@ -586,9 +582,6 @@ func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, u
 		if len(updates) > 0 {
 			_ = s.accountRepo.UpdateExtra(updateCtx, accountID, updates)
 		}
-		if resetAt != nil {
-			_ = s.accountRepo.SetRateLimited(updateCtx, accountID, *resetAt)
-		}
 	}()
 }
 
@@ -599,7 +592,10 @@ func extractOpenAICodexProbeSnapshot(resp *http.Response) (map[string]any, *time
 	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 		baseTime := time.Now()
 		updates := buildCodexUsageExtraUpdates(snapshot, baseTime)
-		resetAt := codexRateLimitResetAtFromSnapshot(snapshot, baseTime)
+		var resetAt *time.Time
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resetAt = codexRateLimitResetAtFromSnapshot(snapshot, baseTime)
+		}
 		if len(updates) > 0 {
 			return updates, resetAt, nil
 		}

@@ -1531,3 +1531,68 @@ func (h *SettingHandler) UpdateStreamTimeoutSettings(c *gin.Context) {
 		ThresholdWindowMinutes: updatedSettings.ThresholdWindowMinutes,
 	})
 }
+
+// GetOpenAIRateLimitRecoverySettings 获取 OpenAI 限流恢复自测配置
+// GET /api/v1/admin/settings/openai-rate-limit-recovery
+func (h *SettingHandler) GetOpenAIRateLimitRecoverySettings(c *gin.Context) {
+	settings, err := h.settingService.GetOpenAIRateLimitRecoverySettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.OpenAIRateLimitRecoverySettings{
+		Enabled:              settings.Enabled,
+		TestModel:            settings.TestModel,
+		CheckIntervalMinutes: settings.CheckIntervalMinutes,
+	})
+}
+
+// UpdateOpenAIRateLimitRecoverySettingsRequest 更新 OpenAI 限流恢复自测配置请求
+type UpdateOpenAIRateLimitRecoverySettingsRequest struct {
+	Enabled              bool   `json:"enabled"`
+	TestModel            string `json:"test_model"`
+	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+}
+
+// UpdateOpenAIRateLimitRecoverySettings 更新 OpenAI 限流恢复自测配置
+// PUT /api/v1/admin/settings/openai-rate-limit-recovery
+func (h *SettingHandler) UpdateOpenAIRateLimitRecoverySettings(c *gin.Context) {
+	var req UpdateOpenAIRateLimitRecoverySettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	req.TestModel = strings.TrimSpace(req.TestModel)
+	if req.TestModel == "" {
+		response.BadRequest(c, "test_model is required")
+		return
+	}
+	if req.CheckIntervalMinutes < 1 || req.CheckIntervalMinutes > 1440 {
+		response.BadRequest(c, "check_interval_minutes must be between 1 and 1440")
+		return
+	}
+
+	settings := &service.OpenAIRateLimitRecoverySettings{
+		Enabled:              req.Enabled,
+		TestModel:            req.TestModel,
+		CheckIntervalMinutes: req.CheckIntervalMinutes,
+	}
+	if err := h.settingService.SetOpenAIRateLimitRecoverySettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	updatedSettings, err := h.settingService.GetOpenAIRateLimitRecoverySettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.OpenAIRateLimitRecoverySettings{
+		Enabled:              updatedSettings.Enabled,
+		TestModel:            updatedSettings.TestModel,
+		CheckIntervalMinutes: updatedSettings.CheckIntervalMinutes,
+	})
+}

@@ -115,7 +115,30 @@ func TestExtractOpenAICodexProbeSnapshotAccepts429WithResetAt(t *testing.T) {
 	}
 }
 
-func TestAccountUsageService_PersistOpenAICodexProbeSnapshotSetsRateLimit(t *testing.T) {
+func TestExtractOpenAICodexProbeSnapshotDoesNotReturnResetAtForSuccessfulResponse(t *testing.T) {
+	t.Parallel()
+
+	headers := make(http.Header)
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-reset-after-seconds", "604800")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+	headers.Set("x-codex-secondary-used-percent", "100")
+	headers.Set("x-codex-secondary-reset-after-seconds", "18000")
+	headers.Set("x-codex-secondary-window-minutes", "300")
+
+	updates, resetAt, err := extractOpenAICodexProbeSnapshot(&http.Response{StatusCode: http.StatusOK, Header: headers})
+	if err != nil {
+		t.Fatalf("extractOpenAICodexProbeSnapshot() error = %v", err)
+	}
+	if len(updates) == 0 {
+		t.Fatal("expected codex probe updates from success headers")
+	}
+	if resetAt != nil {
+		t.Fatalf("expected no resetAt for successful response, got %v", resetAt)
+	}
+}
+
+func TestAccountUsageService_PersistOpenAICodexProbeSnapshotPersistsExtraOnly(t *testing.T) {
 	t.Parallel()
 
 	repo := &accountUsageCodexProbeRepo{
@@ -141,10 +164,7 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotSetsRateLimit(t *tes
 
 	select {
 	case got := <-repo.rateLimitCh:
-		if got.Before(resetAt.Add(-time.Second)) || got.After(resetAt.Add(time.Second)) {
-			t.Fatalf("rate limit resetAt = %v, want around %v", got, resetAt)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("waiting for codex probe rate limit persistence timed out")
+		t.Fatalf("unexpected rate limit persistence: %v", got)
+	case <-time.After(200 * time.Millisecond):
 	}
 }

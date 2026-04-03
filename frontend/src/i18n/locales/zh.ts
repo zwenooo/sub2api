@@ -4502,6 +4502,21 @@ export default {
         saved: '流超时设置保存成功',
         saveFailed: '保存流超时设置失败'
       },
+      openAIRateLimitRecovery: {
+        title: 'OpenAI 限流自动复测',
+        description: '仅针对 OpenAI 平台。账号因真实 429 进入限流后，按固定间隔自动做一次上游测试；测试成功则立即移除限流状态。',
+        enabled: '启用自动复测恢复',
+        enabledHint: '开启后会对 OpenAI 平台下处于限流中的账号定时自测并尝试恢复调度',
+        testModel: '自测模型',
+        testModelPlaceholder: '例如：gpt-5.1-codex',
+        testModelHint: '所有 OpenAI 限流账号共用这一默认测试模型',
+        testModelRequired: '请填写自测模型',
+        checkIntervalMinutes: '复测间隔（分钟）',
+        checkIntervalMinutesHint: '每隔多久对当前限流中的 OpenAI 账号执行一轮自测，范围 1-1440 分钟',
+        checkIntervalMinutesInvalid: '复测间隔必须在 1 到 1440 分钟之间',
+        saved: 'OpenAI 限流自动复测设置保存成功',
+        saveFailed: '保存 OpenAI 限流自动复测设置失败'
+      },
       rectifier: {
         title: '请求整流器',
         description: '当上游返回特定错误时，自动修正请求参数并重试，提高请求成功率',
