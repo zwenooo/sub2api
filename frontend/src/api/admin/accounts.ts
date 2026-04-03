@@ -535,8 +535,13 @@ export async function importOpenAIAuthItems(
   items: AdminOpenAIAuthImportSource[],
   options?: {
     group_ids?: number[]
+    proxy_id?: number | null
     name_template?: string
     refresh_before_import?: boolean
+    auto_pause_on_expired?: boolean
+    openai_passthrough?: boolean
+    openai_ws_mode?: string
+    codex_cli_only?: boolean
   }
 ): Promise<AdminOpenAIAuthImportResult> {
   const payload: AdminOpenAIAuthImportRequest = {
@@ -551,6 +556,21 @@ export async function importOpenAIAuthItems(
   if (options?.refresh_before_import) {
     payload.refresh_before_import = true
   }
+  if (options?.proxy_id != null) {
+    payload.proxy_id = options.proxy_id
+  }
+  if (options?.auto_pause_on_expired !== undefined) {
+    payload.auto_pause_on_expired = options.auto_pause_on_expired
+  }
+  if (options?.openai_passthrough !== undefined) {
+    payload.openai_passthrough = options.openai_passthrough
+  }
+  if (options?.openai_ws_mode?.trim()) {
+    payload.openai_ws_mode = options.openai_ws_mode.trim()
+  }
+  if (options?.codex_cli_only !== undefined) {
+    payload.codex_cli_only = options.codex_cli_only
+  }
 
   const { data } = await apiClient.post<AdminOpenAIAuthImportResult>(
     '/admin/accounts/openai-auths/import',
@@ -563,8 +583,13 @@ export async function importOpenAIAuthFile(
   file: File,
   options?: {
     group_ids?: number[]
+    proxy_id?: number | null
     name_template?: string
     refresh_before_import?: boolean
+    auto_pause_on_expired?: boolean
+    openai_passthrough?: boolean
+    openai_ws_mode?: string
+    codex_cli_only?: boolean
   }
 ): Promise<AdminOpenAIAuthImportResult> {
   const formData = new FormData()
@@ -577,6 +602,21 @@ export async function importOpenAIAuthFile(
   }
   if (options?.refresh_before_import) {
     formData.append('refresh_before_import', 'true')
+  }
+  if (options?.proxy_id != null) {
+    formData.append('proxy_id', String(options.proxy_id))
+  }
+  if (options?.auto_pause_on_expired !== undefined) {
+    formData.append('auto_pause_on_expired', String(options.auto_pause_on_expired))
+  }
+  if (options?.openai_passthrough !== undefined) {
+    formData.append('openai_passthrough', String(options.openai_passthrough))
+  }
+  if (options?.openai_ws_mode?.trim()) {
+    formData.append('openai_ws_mode', options.openai_ws_mode.trim())
+  }
+  if (options?.codex_cli_only !== undefined) {
+    formData.append('codex_cli_only', String(options.codex_cli_only))
   }
 
   const { data } = await apiClient.post<AdminOpenAIAuthImportResult>(

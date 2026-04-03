@@ -38,14 +38,24 @@ type OpenAIAuthImportError struct {
 type openAIAuthImportRequest struct {
 	Items               []json.RawMessage `json:"items"`
 	GroupIDs            []int64           `json:"group_ids"`
+	ProxyID             *int64            `json:"proxy_id"`
 	NameTemplate        string            `json:"name_template"`
 	RefreshBeforeImport bool              `json:"refresh_before_import"`
+	AutoPauseOnExpired  *bool             `json:"auto_pause_on_expired"`
+	OpenAIPassthrough   *bool             `json:"openai_passthrough"`
+	OpenAIWSMode        string            `json:"openai_ws_mode"`
+	CodexCLIOnly        *bool             `json:"codex_cli_only"`
 }
 
 type openAIAuthImportOptions struct {
 	GroupIDs            []int64
+	ProxyID             *int64
 	NameTemplate        string
 	RefreshBeforeImport bool
+	AutoPauseOnExpired  *bool
+	OpenAIPassthrough   *bool
+	OpenAIWSMode        string
+	CodexCLIOnly        *bool
 }
 
 var openAIAuthImportSupportedTemplateTokens = map[string]struct{}{
@@ -120,8 +130,13 @@ func (h *AccountHandler) ImportOpenAIAuthFile(c *gin.Context) {
 		"filename":              fileHeader.Filename,
 		"payload":               string(raw),
 		"group_ids":             options.GroupIDs,
+		"proxy_id":              options.ProxyID,
 		"name_template":         options.NameTemplate,
 		"refresh_before_import": options.RefreshBeforeImport,
+		"auto_pause_on_expired": options.AutoPauseOnExpired,
+		"openai_passthrough":    options.OpenAIPassthrough,
+		"openai_ws_mode":        options.OpenAIWSMode,
+		"codex_cli_only":        options.CodexCLIOnly,
 	}, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		return h.importOpenAIAuthItems(ctx, items, options)
 	})
@@ -302,10 +317,12 @@ func buildOpenAIAuthImportAccountInput(ctx context.Context, payload map[string]a
 		Platform:             service.PlatformOpenAI,
 		Type:                 service.AccountTypeOAuth,
 		Credentials:          dataAccount.Credentials,
-		Extra:                map[string]any{"import_source": openAIAuthImportSource},
+		Extra:                buildOpenAIAuthImportExtra(options),
+		ProxyID:              cloneOpenAIAuthImportProxyID(options.ProxyID),
 		Concurrency:          openAIAuthImportDefaultConcurrency,
 		Priority:             openAIAuthImportDefaultPriority,
 		GroupIDs:             cloneOpenAIRTImportGroupIDs(options.GroupIDs),
+		AutoPauseOnExpired:   cloneOpenAIAuthImportBool(options.AutoPauseOnExpired),
 		SkipDefaultGroupBind: true,
 	}, accountName, nil
 }
@@ -338,6 +355,23 @@ func overwriteOpenAIAuthImportPlanTypeFromIDToken(item *DataAccount) {
 	if strings.TrimSpace(userInfo.PlanType) != "" {
 		item.Credentials["plan_type"] = strings.TrimSpace(userInfo.PlanType)
 	}
+}
+
+func buildOpenAIAuthImportExtra(options openAIAuthImportOptions) map[string]any {
+	extra := map[string]any{
+		"import_source": openAIAuthImportSource,
+	}
+	if options.OpenAIPassthrough != nil && *options.OpenAIPassthrough {
+		extra["openai_passthrough"] = true
+	}
+	if options.OpenAIWSMode != "" {
+		extra["openai_oauth_responses_websockets_v2_mode"] = options.OpenAIWSMode
+		extra["openai_oauth_responses_websockets_v2_enabled"] = options.OpenAIWSMode != service.OpenAIWSIngressModeOff
+	}
+	if options.CodexCLIOnly != nil && *options.CodexCLIOnly {
+		extra["codex_cli_only"] = true
+	}
+	return extra
 }
 
 func buildOpenAIAuthImportAccountName(credentials map[string]any, index int) string {
@@ -385,7 +419,16 @@ func decodeOpenAIAuthImportRequest(raw []byte) ([]json.RawMessage, openAIAuthImp
 		return nil, openAIAuthImportOptions{}, err
 	}
 
-	options, err := normalizeOpenAIAuthImportOptions(req.GroupIDs, req.NameTemplate, req.RefreshBeforeImport)
+	options, err := normalizeOpenAIAuthImportOptions(
+		req.GroupIDs,
+		req.ProxyID,
+		req.NameTemplate,
+		req.RefreshBeforeImport,
+		req.AutoPauseOnExpired,
+		req.OpenAIPassthrough,
+		req.OpenAIWSMode,
+		req.CodexCLIOnly,
+	)
 	if err != nil {
 		return nil, openAIAuthImportOptions{}, err
 	}
@@ -404,24 +447,72 @@ func parseOpenAIAuthImportFormOptions(c *gin.Context) (openAIAuthImportOptions, 
 	if err != nil {
 		return openAIAuthImportOptions{}, err
 	}
+	proxyID, err := parseOpenAIAuthImportProxyID(c.PostForm("proxy_id"))
+	if err != nil {
+		return openAIAuthImportOptions{}, err
+	}
 	refreshBeforeImport, err := parseOpenAIAuthImportBool(c.PostForm("refresh_before_import"), "refresh_before_import")
 	if err != nil {
 		return openAIAuthImportOptions{}, err
 	}
-	return normalizeOpenAIAuthImportOptions(groupIDs, c.PostForm("name_template"), refreshBeforeImport)
+	autoPauseOnExpired, err := parseOpenAIAuthImportOptionalBool(c.PostForm("auto_pause_on_expired"), "auto_pause_on_expired")
+	if err != nil {
+		return openAIAuthImportOptions{}, err
+	}
+	openAIPassthrough, err := parseOpenAIAuthImportOptionalBool(c.PostForm("openai_passthrough"), "openai_passthrough")
+	if err != nil {
+		return openAIAuthImportOptions{}, err
+	}
+	codexCLIOnly, err := parseOpenAIAuthImportOptionalBool(c.PostForm("codex_cli_only"), "codex_cli_only")
+	if err != nil {
+		return openAIAuthImportOptions{}, err
+	}
+	return normalizeOpenAIAuthImportOptions(
+		groupIDs,
+		proxyID,
+		c.PostForm("name_template"),
+		refreshBeforeImport,
+		autoPauseOnExpired,
+		openAIPassthrough,
+		c.PostForm("openai_ws_mode"),
+		codexCLIOnly,
+	)
 }
 
-func normalizeOpenAIAuthImportOptions(groupIDs []int64, nameTemplate string, refreshBeforeImport bool) (openAIAuthImportOptions, error) {
+func normalizeOpenAIAuthImportOptions(
+	groupIDs []int64,
+	proxyID *int64,
+	nameTemplate string,
+	refreshBeforeImport bool,
+	autoPauseOnExpired *bool,
+	openAIPassthrough *bool,
+	openAIWSMode string,
+	codexCLIOnly *bool,
+) (openAIAuthImportOptions, error) {
 	trimmedTemplate := strings.TrimSpace(nameTemplate)
 	if trimmedTemplate != "" {
 		if err := validateOpenAIAuthImportNameTemplate(trimmedTemplate); err != nil {
 			return openAIAuthImportOptions{}, err
 		}
 	}
+
+	normalizedWSMode := ""
+	if strings.TrimSpace(openAIWSMode) != "" {
+		normalizedWSMode = normalizeOpenAIRTImportWSMode(openAIWSMode)
+		if normalizedWSMode == "" {
+			return openAIAuthImportOptions{}, fmt.Errorf("invalid openai_ws_mode %q, allowed values: off, ctx_pool, passthrough, shared, dedicated", strings.TrimSpace(openAIWSMode))
+		}
+	}
+
 	return openAIAuthImportOptions{
 		GroupIDs:            normalizeOpenAIRTImportGroupIDs(groupIDs),
+		ProxyID:             normalizeOpenAIAuthImportProxyID(proxyID),
 		NameTemplate:        trimmedTemplate,
 		RefreshBeforeImport: refreshBeforeImport,
+		AutoPauseOnExpired:  cloneOpenAIAuthImportBool(autoPauseOnExpired),
+		OpenAIPassthrough:   cloneOpenAIAuthImportBool(openAIPassthrough),
+		OpenAIWSMode:        normalizedWSMode,
+		CodexCLIOnly:        cloneOpenAIAuthImportBool(codexCLIOnly),
 	}, nil
 }
 
@@ -435,6 +526,30 @@ func parseOpenAIAuthImportBool(raw string, fieldName string) (bool, error) {
 		return false, fmt.Errorf("%s must be a boolean: %w", fieldName, err)
 	}
 	return value, nil
+}
+
+func parseOpenAIAuthImportOptionalBool(raw string, fieldName string) (*bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseBool(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be a boolean: %w", fieldName, err)
+	}
+	return boolPtr(value), nil
+}
+
+func parseOpenAIAuthImportProxyID(raw string) (*int64, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("proxy_id must be an integer: %w", err)
+	}
+	return &value, nil
 }
 
 func parseOpenAIAuthImportGroupIDs(raw string) ([]int64, error) {
@@ -465,6 +580,30 @@ func parseOpenAIAuthImportGroupIDs(raw string) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+func normalizeOpenAIAuthImportProxyID(value *int64) *int64 {
+	if value == nil || *value <= 0 {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneOpenAIAuthImportProxyID(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneOpenAIAuthImportBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func validateOpenAIAuthImportNameTemplate(template string) error {

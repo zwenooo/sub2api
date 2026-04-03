@@ -237,6 +237,84 @@ func TestImportOpenAIAuthFileSupportsGroupIDsAndNameTemplate(t *testing.T) {
 	require.Equal(t, []int64{21}, created.GroupIDs)
 }
 
+func TestImportOpenAIAuthJSONSupportsAccountOptions(t *testing.T) {
+	router, adminSvc := setupOpenAIAuthImportRouter(nil)
+
+	body := map[string]any{
+		"items": []map[string]any{
+			{
+				"tokens": map[string]any{
+					"access_token":  "at-opts",
+					"refresh_token": "rt-opts",
+					"account_id":    "acct-opts",
+				},
+			},
+		},
+		"proxy_id":              9,
+		"auto_pause_on_expired": false,
+		"openai_passthrough":    true,
+		"openai_ws_mode":        "off",
+		"codex_cli_only":        true,
+	}
+
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/openai-auths/import", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.NotNil(t, created.ProxyID)
+	require.EqualValues(t, 9, *created.ProxyID)
+	require.NotNil(t, created.AutoPauseOnExpired)
+	require.False(t, *created.AutoPauseOnExpired)
+	require.Equal(t, true, created.Extra["openai_passthrough"])
+	require.Equal(t, service.OpenAIWSIngressModeOff, created.Extra["openai_oauth_responses_websockets_v2_mode"])
+	require.Equal(t, false, created.Extra["openai_oauth_responses_websockets_v2_enabled"])
+	require.Equal(t, true, created.Extra["codex_cli_only"])
+}
+
+func TestImportOpenAIAuthFileSupportsAccountOptions(t *testing.T) {
+	router, adminSvc := setupOpenAIAuthImportRouter(nil)
+
+	payload := `[{"tokens":{"refresh_token":"rt-file-opts","access_token":"at-file-opts","account_id":"acct-file-opts"}}]`
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "auth.json")
+	require.NoError(t, err)
+	_, err = part.Write([]byte(payload))
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("proxy_id", "15"))
+	require.NoError(t, writer.WriteField("auto_pause_on_expired", "true"))
+	require.NoError(t, writer.WriteField("openai_passthrough", "false"))
+	require.NoError(t, writer.WriteField("openai_ws_mode", "passthrough"))
+	require.NoError(t, writer.WriteField("codex_cli_only", "true"))
+	require.NoError(t, writer.Close())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/openai-auths/import-file", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.NotNil(t, created.ProxyID)
+	require.EqualValues(t, 15, *created.ProxyID)
+	require.NotNil(t, created.AutoPauseOnExpired)
+	require.True(t, *created.AutoPauseOnExpired)
+	require.Equal(t, service.OpenAIWSIngressModePassthrough, created.Extra["openai_oauth_responses_websockets_v2_mode"])
+	require.Equal(t, true, created.Extra["openai_oauth_responses_websockets_v2_enabled"])
+	require.Equal(t, true, created.Extra["codex_cli_only"])
+	_, hasPassthrough := created.Extra["openai_passthrough"]
+	require.False(t, hasPassthrough)
+}
+
 func TestImportOpenAIAuthJSONRejectsUnsupportedTemplatePlaceholder(t *testing.T) {
 	router, _ := setupOpenAIAuthImportRouter(nil)
 

@@ -106,6 +106,81 @@
         </label>
       </div>
 
+      <div class="space-y-4 rounded-lg border border-gray-200 p-4 dark:border-dark-700">
+        <div class="space-y-1">
+          <div class="text-sm font-medium text-gray-900 dark:text-white">
+            {{ t('admin.accounts.openAIAuthImportAccountOptionsTitle') }}
+          </div>
+          <div class="text-xs text-gray-500 dark:text-dark-400">
+            {{ t('admin.accounts.openAIAuthImportAccountOptionsHint') }}
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <label class="input-label">{{ t('admin.accounts.proxy') }}</label>
+          <ProxySelector v-model="proxyID" :proxies="props.proxies" />
+        </div>
+
+        <div class="space-y-2">
+          <label class="input-label">{{ t('admin.accounts.openai.wsMode') }}</label>
+          <Select v-model="openAIWSMode" :options="openAIWSModeOptions" />
+          <div class="text-xs text-gray-500 dark:text-dark-400">
+            {{ t('admin.accounts.openai.wsModeDesc') }}
+          </div>
+          <div class="text-xs text-gray-500 dark:text-dark-400">
+            {{ openAIWSMode ? t(openAIWSModeConcurrencyHintKey) : t('admin.accounts.openAIAuthImportWSModeDefaultHint') }}
+          </div>
+        </div>
+
+        <label class="flex items-start gap-3 text-sm text-gray-700 dark:text-dark-200">
+          <input
+            v-model="openAIPassthrough"
+            type="checkbox"
+            class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+          <span class="space-y-1">
+            <span class="block font-medium text-gray-900 dark:text-white">
+              {{ t('admin.accounts.openai.oauthPassthrough') }}
+            </span>
+            <span class="block text-xs text-gray-500 dark:text-dark-400">
+              {{ t('admin.accounts.openai.oauthPassthroughDesc') }}
+            </span>
+          </span>
+        </label>
+
+        <label class="flex items-start gap-3 text-sm text-gray-700 dark:text-dark-200">
+          <input
+            v-model="codexCLIOnly"
+            type="checkbox"
+            class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+          <span class="space-y-1">
+            <span class="block font-medium text-gray-900 dark:text-white">
+              {{ t('admin.accounts.openai.codexCLIOnly') }}
+            </span>
+            <span class="block text-xs text-gray-500 dark:text-dark-400">
+              {{ t('admin.accounts.openai.codexCLIOnlyDesc') }}
+            </span>
+          </span>
+        </label>
+
+        <label class="flex items-start gap-3 text-sm text-gray-700 dark:text-dark-200">
+          <input
+            v-model="autoPauseOnExpired"
+            type="checkbox"
+            class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+          <span class="space-y-1">
+            <span class="block font-medium text-gray-900 dark:text-white">
+              {{ t('admin.accounts.autoPauseOnExpired') }}
+            </span>
+            <span class="block text-xs text-gray-500 dark:text-dark-400">
+              {{ t('admin.accounts.autoPauseOnExpiredDesc') }}
+            </span>
+          </span>
+        </label>
+      </div>
+
       <div class="space-y-2">
         <label class="input-label">{{ t('admin.accounts.openAIAuthImportNameTemplate') }}</label>
         <select
@@ -192,13 +267,27 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
+import ProxySelector from '@/components/common/ProxySelector.vue'
+import Select from '@/components/common/Select.vue'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
-import type { AdminGroup, AdminOpenAIAuthImportResult, AdminOpenAIAuthImportSource } from '@/types'
+import {
+  OPENAI_WS_MODE_OFF,
+  OPENAI_WS_MODE_PASSTHROUGH,
+  type OpenAIWSMode,
+  resolveOpenAIWSModeConcurrencyHintKey
+} from '@/utils/openaiWsMode'
+import type {
+  AdminGroup,
+  AdminOpenAIAuthImportResult,
+  AdminOpenAIAuthImportSource,
+  Proxy
+} from '@/types'
 
 interface Props {
   show: boolean
   groups: AdminGroup[]
+  proxies: Proxy[]
 }
 
 interface Emits {
@@ -241,11 +330,26 @@ const selectedGroupIds = ref<number[]>([])
 const selectedTemplatePreset = ref(defaultNameTemplatePresetValue)
 const nameTemplate = ref('')
 const refreshBeforeImport = ref(false)
+const proxyID = ref<number | null>(null)
+const autoPauseOnExpired = ref(false)
+const openAIPassthrough = ref(false)
+const openAIWSMode = ref<OpenAIWSMode | ''>('')
+const codexCLIOnly = ref(false)
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const fileName = computed(() => file.value?.name || '')
 const errorItems = computed(() => result.value?.errors || [])
 const openAIGroups = computed(() => props.groups.filter((group) => group.platform === 'openai'))
+const openAIWSModeOptions = computed(() => [
+  { value: '', label: t('admin.accounts.openAIAuthImportWSModeDefault') },
+  { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
+  { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
+])
+const openAIWSModeConcurrencyHintKey = computed(() =>
+  resolveOpenAIWSModeConcurrencyHintKey(
+    openAIWSMode.value === OPENAI_WS_MODE_PASSTHROUGH ? OPENAI_WS_MODE_PASSTHROUGH : OPENAI_WS_MODE_OFF
+  )
+)
 const supportedTemplateTokens = [
   '{index}',
   '{email}',
@@ -309,6 +413,11 @@ watch(
     selectedTemplatePreset.value = defaultNameTemplatePresetValue
     nameTemplate.value = ''
     refreshBeforeImport.value = false
+    proxyID.value = null
+    autoPauseOnExpired.value = false
+    openAIPassthrough.value = false
+    openAIWSMode.value = ''
+    codexCLIOnly.value = false
     file.value = null
     jsonText.value = ''
     result.value = null
@@ -362,7 +471,12 @@ const handleImport = async () => {
       response = await adminAPI.accounts.importOpenAIAuthFile(file.value, {
         group_ids: selectedGroupIds.value,
         name_template: nameTemplate.value,
-        refresh_before_import: refreshBeforeImport.value
+        refresh_before_import: refreshBeforeImport.value,
+        proxy_id: proxyID.value,
+        auto_pause_on_expired: autoPauseOnExpired.value ? true : undefined,
+        openai_passthrough: openAIPassthrough.value ? true : undefined,
+        openai_ws_mode: openAIWSMode.value,
+        codex_cli_only: codexCLIOnly.value ? true : undefined
       })
     } else {
       if (!jsonText.value.trim()) {
@@ -388,7 +502,12 @@ const handleImport = async () => {
         {
           group_ids: selectedGroupIds.value,
           name_template: nameTemplate.value,
-          refresh_before_import: refreshBeforeImport.value
+          refresh_before_import: refreshBeforeImport.value,
+          proxy_id: proxyID.value,
+          auto_pause_on_expired: autoPauseOnExpired.value ? true : undefined,
+          openai_passthrough: openAIPassthrough.value ? true : undefined,
+          openai_ws_mode: openAIWSMode.value,
+          codex_cli_only: codexCLIOnly.value ? true : undefined
         }
       )
     }

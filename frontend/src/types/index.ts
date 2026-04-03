@@ -953,8 +953,13 @@ export type AdminOpenAIAuthImportSource = Record<string, unknown>
 export interface AdminOpenAIAuthImportRequest {
   items: AdminOpenAIAuthImportSource[]
   group_ids?: number[]
+  proxy_id?: number | null
   name_template?: string
   refresh_before_import?: boolean
+  auto_pause_on_expired?: boolean
+  openai_passthrough?: boolean
+  openai_ws_mode?: string
+  codex_cli_only?: boolean
 }
 
 export interface AdminOpenAIAuthImportError {
