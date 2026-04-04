@@ -477,6 +477,7 @@ import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+import { resolveCodexUsageWindow } from '@/utils/codexUsage'
 import { formatCompactNumber } from '@/utils/format'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
@@ -536,12 +537,36 @@ const geminiUsageAvailable = computed(() => {
   )
 })
 
+const codex5hWindow = computed(() => resolveCodexUsageWindow(props.account.extra, '5h'))
+const codex7dWindow = computed(() => resolveCodexUsageWindow(props.account.extra, '7d'))
+
+const hasCodexUsage = computed(() => {
+  return codex5hWindow.value.usedPercent !== null || codex7dWindow.value.usedPercent !== null
+})
+
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
 })
 
+const isActiveOpenAIRateLimited = computed(() => {
+  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
+  if (!props.account.rate_limit_reset_at) return false
+  const resetAt = Date.parse(props.account.rate_limit_reset_at)
+  return !Number.isNaN(resetAt) && resetAt > Date.now()
+})
+
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
+
+const isOpenAICodexSnapshotStale = computed(() => {
+  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
+  const extra = props.account.extra as Record<string, unknown> | undefined
+  const updatedAtRaw = extra?.codex_usage_updated_at
+  if (!updatedAtRaw) return true
+  const updatedAt = Date.parse(String(updatedAtRaw))
+  if (Number.isNaN(updatedAt)) return true
+  return Date.now() - updatedAt >= 10 * 60 * 1000
+})
 
 const shouldAutoLoadUsageOnMount = computed(() => {
   if (props.account.platform === 'openai' && props.account.type === 'oauth') {
@@ -550,6 +575,11 @@ const shouldAutoLoadUsageOnMount = computed(() => {
   }
   return shouldFetchUsage.value
 })
+
+const codex5hUsedPercent = computed(() => codex5hWindow.value.usedPercent)
+const codex5hResetAt = computed(() => codex5hWindow.value.resetAt)
+const codex7dUsedPercent = computed(() => codex7dWindow.value.usedPercent)
+const codex7dResetAt = computed(() => codex7dWindow.value.resetAt)
 
 // Antigravity quota types (用于 API 返回的数据)
 interface AntigravityUsageResult {
@@ -1085,6 +1115,7 @@ onMounted(() => {
 watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
   if (!prevKey || nextKey === prevKey) return
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
+  if (!isActiveOpenAIRateLimited.value && hasCodexUsage.value && !isOpenAICodexSnapshotStale.value) return
 
   loadUsage().catch((e) => {
     console.error('Failed to refresh OpenAI usage:', e)
