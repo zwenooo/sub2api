@@ -198,6 +198,7 @@ func (s *OpenAIRateLimitRecoveryService) listRecoverableAccounts(ctx context.Con
 			"rate_limited",
 			"",
 			0,
+			"",
 		)
 		if err != nil {
 			return nil, err
