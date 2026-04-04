@@ -1,0 +1,14 @@
+warning: in the working copy of '.dockerignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.env.actions.example', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.gitattributes', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'DEV_GUIDE.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Dockerfile.goreleaser', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'LICENSE', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Makefile', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'README_CN.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'README_JA.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/.dockerignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/Makefile', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/cmd/server/VERSION', LF will be replaced by CRLF the next time Git touches it
