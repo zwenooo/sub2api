@@ -1,12 +1,13 @@
 <template>
-  <div v-if="showUsageWindows">
-    <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
-    <template
-      v-if="
-        account.platform === 'anthropic' &&
-        (account.type === 'oauth' || account.type === 'setup-token')
-      "
-    >
+  <div ref="cellRootRef">
+    <div v-if="showUsageWindows">
+      <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
+      <template
+        v-if="
+          account.platform === 'anthropic' &&
+          (account.type === 'oauth' || account.type === 'setup-token')
+        "
+      >
       <!-- Loading state -->
       <div v-if="loading" class="space-y-1.5">
         <!-- OAuth: 3 rows, Setup Token: 1 row -->
@@ -105,10 +106,10 @@
 
       <!-- No data yet -->
       <div v-else class="text-xs text-gray-400">-</div>
-    </template>
+      </template>
 
-    <!-- OpenAI OAuth accounts: single source from /usage API -->
-    <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
+      <!-- OpenAI OAuth accounts: single source from /usage API -->
+      <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
       <div v-if="hasOpenAIUsageFallback" class="space-y-1">
         <UsageProgressBar
           v-if="usageInfo?.five_hour"
@@ -173,10 +174,10 @@
         </div>
       </div>
       <div v-else class="text-xs text-gray-400">-</div>
-    </template>
+      </template>
 
-    <!-- Antigravity OAuth accounts: fetch usage from API -->
-    <template v-else-if="account.platform === 'antigravity' && account.type === 'oauth'">
+      <!-- Antigravity OAuth accounts: fetch usage from API -->
+      <template v-else-if="account.platform === 'antigravity' && account.type === 'oauth'">
       <!-- 账户类型徽章 -->
       <div v-if="antigravityTierLabel" class="mb-1 flex items-center gap-1">
         <span
@@ -316,10 +317,10 @@
         💳 {{ t('admin.accounts.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
       </div>
       <div v-else class="text-xs text-gray-400">-</div>
-    </template>
+      </template>
 
-    <!-- Gemini platform: show quota + local usage window -->
-    <template v-else-if="account.platform === 'gemini'">
+      <!-- Gemini platform: show quota + local usage window -->
+      <template v-else-if="account.platform === 'gemini'">
       <!-- Auth Type + Tier Badge (first line) -->
       <div v-if="geminiAuthTypeLabel" class="mb-1 flex items-center gap-1">
         <span
@@ -395,84 +396,85 @@
           {{ t('admin.accounts.gemini.rateLimit.unlimited') }}
         </div>
       </div>
-    </template>
+      </template>
 
-    <!-- Other accounts: no usage window -->
-    <template v-else>
-      <div class="text-xs text-gray-400">-</div>
-    </template>
-  </div>
+      <!-- Other accounts: no usage window -->
+      <template v-else>
+        <div class="text-xs text-gray-400">-</div>
+      </template>
+    </div>
 
-  <!-- Non-OAuth/Setup-Token accounts -->
-  <div v-else>
-    <!-- Gemini API Key accounts: show quota info -->
-    <AccountQuotaInfo v-if="account.platform === 'gemini'" :account="account" />
-    <!-- Key/Bedrock accounts: show today stats + optional quota bars -->
-    <div v-else class="space-y-1">
-      <!-- Today stats row (requests, tokens, cost, user_cost) -->
-      <div
-        v-if="todayStats"
-        class="mb-0.5 flex items-center"
-      >
-        <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
-          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
-            {{ formatKeyRequests }} req
-          </span>
-          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
-            {{ formatKeyTokens }}
-          </span>
-          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
-            A ${{ formatKeyCost }}
-          </span>
-          <span
-            v-if="todayStats.user_cost != null"
-            class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
-            :title="t('usage.userBilled')"
-          >
-            U ${{ formatKeyUserCost }}
-          </span>
+    <!-- Non-OAuth/Setup-Token accounts -->
+    <div v-else>
+      <!-- Gemini API Key accounts: show quota info -->
+      <AccountQuotaInfo v-if="account.platform === 'gemini'" :account="account" />
+      <!-- Key/Bedrock accounts: show today stats + optional quota bars -->
+      <div v-else class="space-y-1">
+        <!-- Today stats row (requests, tokens, cost, user_cost) -->
+        <div
+          v-if="todayStats"
+          class="mb-0.5 flex items-center"
+        >
+          <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
+            <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+              {{ formatKeyRequests }} req
+            </span>
+            <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+              {{ formatKeyTokens }}
+            </span>
+            <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800" :title="t('usage.accountBilled')">
+              A ${{ formatKeyCost }}
+            </span>
+            <span
+              v-if="todayStats.user_cost != null"
+              class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800"
+              :title="t('usage.userBilled')"
+            >
+              U ${{ formatKeyUserCost }}
+            </span>
+          </div>
         </div>
-      </div>
-      <!-- Loading skeleton for today stats -->
-      <div
-        v-else-if="todayStatsLoading"
-        class="mb-0.5 flex items-center gap-1"
-      >
-        <div class="h-3 w-10 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
-        <div class="h-3 w-8 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
-        <div class="h-3 w-12 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
-      </div>
+        <!-- Loading skeleton for today stats -->
+        <div
+          v-else-if="todayStatsLoading"
+          class="mb-0.5 flex items-center gap-1"
+        >
+          <div class="h-3 w-10 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-8 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-12 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
 
-      <!-- API Key accounts with quota limits: show progress bars -->
-      <UsageProgressBar
-        v-if="quotaDailyBar"
-        label="1d"
-        :utilization="quotaDailyBar.utilization"
-        :resets-at="quotaDailyBar.resetsAt"
-        color="indigo"
-      />
-      <UsageProgressBar
-        v-if="quotaWeeklyBar"
-        label="7d"
-        :utilization="quotaWeeklyBar.utilization"
-        :resets-at="quotaWeeklyBar.resetsAt"
-        color="emerald"
-      />
-      <UsageProgressBar
-        v-if="quotaTotalBar"
-        label="total"
-        :utilization="quotaTotalBar.utilization"
-        color="purple"
-      />
+        <!-- API Key accounts with quota limits: show progress bars -->
+        <UsageProgressBar
+          v-if="quotaDailyBar"
+          label="1d"
+          :utilization="quotaDailyBar.utilization"
+          :resets-at="quotaDailyBar.resetsAt"
+          color="indigo"
+        />
+        <UsageProgressBar
+          v-if="quotaWeeklyBar"
+          label="7d"
+          :utilization="quotaWeeklyBar.utilization"
+          :resets-at="quotaWeeklyBar.resetsAt"
+          color="emerald"
+        />
+        <UsageProgressBar
+          v-if="quotaTotalBar"
+          label="total"
+          :utilization="quotaTotalBar.utilization"
+          color="purple"
+        />
 
-      <!-- No data at all -->
-      <div v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota" class="text-xs text-gray-400">-</div>
+        <!-- No data at all -->
+        <div v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota" class="text-xs text-gray-400">-</div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
@@ -498,10 +500,23 @@ const props = withDefaults(
 
 const { t } = useI18n()
 
+type UsageLoadSource = 'passive' | 'active' | undefined
+type PendingUsageLoad = {
+  source: UsageLoadSource
+  force: boolean
+}
+
+const USAGE_CACHE_TTL_MS = 30 * 1000
+const usageInfoCache = new Map<number, { usageInfo: AccountUsageInfo; cachedAt: number }>()
+
 const loading = ref(false)
 const activeQueryLoading = ref(false)
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
+const cellRootRef = ref<HTMLElement | null>(null)
+const isCellVisible = ref(false)
+const pendingUsageLoad = ref<PendingUsageLoad | null>(null)
+let visibilityObserver: IntersectionObserver | null = null
 
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {
@@ -992,6 +1007,22 @@ const isAnthropicOAuthOrSetupToken = computed(() => {
   return props.account.platform === 'anthropic' && (props.account.type === 'oauth' || props.account.type === 'setup-token')
 })
 
+const resolveDefaultUsageSource = (): UsageLoadSource => {
+  return isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined
+}
+
+const hydrateUsageFromCache = () => {
+  const cached = usageInfoCache.get(props.account.id)
+  if (!cached) return false
+  if (Date.now() - cached.cachedAt > USAGE_CACHE_TTL_MS) {
+    usageInfoCache.delete(props.account.id)
+    return false
+  }
+  usageInfo.value = cached.usageInfo
+  error.value = null
+  return true
+}
+
 const loadUsage = async (source?: 'passive' | 'active') => {
   if (!shouldFetchUsage.value) return
 
@@ -1000,6 +1031,12 @@ const loadUsage = async (source?: 'passive' | 'active') => {
 
   try {
     usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, source)
+    if (usageInfo.value) {
+      usageInfoCache.set(props.account.id, {
+        usageInfo: usageInfo.value,
+        cachedAt: Date.now()
+      })
+    }
   } catch (e: any) {
     error.value = t('common.error')
     console.error('Failed to load usage:', e)
@@ -1008,10 +1045,47 @@ const loadUsage = async (source?: 'passive' | 'active') => {
   }
 }
 
+const ensureUsageLoaded = async (request: PendingUsageLoad) => {
+  if (!shouldFetchUsage.value) return
+  if (!isCellVisible.value) {
+    pendingUsageLoad.value = request
+    return
+  }
+  if (!request.force && (loading.value || usageInfo.value || error.value)) {
+    return
+  }
+  pendingUsageLoad.value = null
+  await loadUsage(request.source)
+}
+
+const flushUsageLoadWhenVisible = () => {
+  if (!isCellVisible.value) return
+  if (pendingUsageLoad.value) {
+    const request = pendingUsageLoad.value
+    ensureUsageLoaded(request).catch((e) => {
+      console.error('Failed to load usage after row became visible:', e)
+    })
+    return
+  }
+  if (!shouldAutoLoadUsageOnMount.value) return
+  ensureUsageLoaded({
+    source: resolveDefaultUsageSource(),
+    force: false
+  }).catch((e) => {
+    console.error('Failed to lazily load usage:', e)
+  })
+}
+
 const loadActiveUsage = async () => {
   activeQueryLoading.value = true
   try {
     usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, 'active')
+    if (usageInfo.value) {
+      usageInfoCache.set(props.account.id, {
+        usageInfo: usageInfo.value,
+        cachedAt: Date.now()
+      })
+    }
   } catch (e: any) {
     console.error('Failed to load active usage:', e)
   } finally {
@@ -1106,10 +1180,46 @@ const formatKeyUserCost = computed(() => {
   return props.todayStats.user_cost.toFixed(2)
 })
 
+const disconnectVisibilityObserver = () => {
+  visibilityObserver?.disconnect()
+  visibilityObserver = null
+}
+
+const initVisibilityObserver = () => {
+  if (!shouldFetchUsage.value) return
+  if (typeof IntersectionObserver === 'undefined') {
+    isCellVisible.value = true
+    flushUsageLoadWhenVisible()
+    return
+  }
+  if (!cellRootRef.value) return
+
+  const root = cellRootRef.value.closest('.table-wrapper')
+  disconnectVisibilityObserver()
+  visibilityObserver = new IntersectionObserver(
+    (entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      isCellVisible.value = entry.isIntersecting && entry.intersectionRatio > 0
+      if (isCellVisible.value) {
+        flushUsageLoadWhenVisible()
+      }
+    },
+    {
+      root: root instanceof HTMLElement ? root : null,
+      threshold: 0.01
+    }
+  )
+  visibilityObserver.observe(cellRootRef.value)
+}
+
 onMounted(() => {
-  if (!shouldAutoLoadUsageOnMount.value) return
-  const source = isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined
-  loadUsage(source)
+  hydrateUsageFromCache()
+  initVisibilityObserver()
+})
+
+onUnmounted(() => {
+  disconnectVisibilityObserver()
 })
 
 watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
@@ -1117,7 +1227,10 @@ watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
   if (!isActiveOpenAIRateLimited.value && hasCodexUsage.value && !isOpenAICodexSnapshotStale.value) return
 
-  loadUsage().catch((e) => {
+  ensureUsageLoaded({
+    source: undefined,
+    force: true
+  }).catch((e) => {
     console.error('Failed to refresh OpenAI usage:', e)
   })
 })
@@ -1128,8 +1241,10 @@ watch(
     if (nextToken === prevToken) return
     if (!shouldFetchUsage.value) return
 
-    const source = isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined
-    loadUsage(source).catch((e) => {
+    ensureUsageLoaded({
+      source: resolveDefaultUsageSource(),
+      force: true
+    }).catch((e) => {
       console.error('Failed to refresh usage after manual refresh:', e)
     })
   }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import AccountUsageCell from '../AccountUsageCell.vue'
 import type { Account } from '@/types'
@@ -24,6 +24,55 @@ vi.mock('vue-i18n', async () => {
     })
   }
 })
+
+const originalIntersectionObserver = globalThis.IntersectionObserver
+const mockIntersectionObservers: MockIntersectionObserver[] = []
+
+class MockIntersectionObserver {
+  readonly root: Element | Document | null
+  readonly rootMargin: string
+  readonly thresholds: ReadonlyArray<number>
+  readonly callback: IntersectionObserverCallback
+  observe = vi.fn()
+  unobserve = vi.fn()
+  disconnect = vi.fn()
+  takeRecords = vi.fn(() => [])
+
+  constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+    this.callback = callback
+    this.root = options?.root ?? null
+    this.rootMargin = options?.rootMargin ?? ''
+    const threshold = options?.threshold
+    this.thresholds = Array.isArray(threshold) ? threshold : [threshold ?? 0]
+    mockIntersectionObservers.push(this)
+  }
+
+  trigger(isIntersecting: boolean) {
+    const ratio = isIntersecting ? 1 : 0
+    this.callback(
+      [{
+        isIntersecting,
+        intersectionRatio: ratio,
+        target: document.createElement('div'),
+        time: Date.now(),
+        boundingClientRect: {} as DOMRectReadOnly,
+        intersectionRect: {} as DOMRectReadOnly,
+        rootBounds: null
+      }],
+      this as unknown as IntersectionObserver
+    )
+  }
+}
+
+const installMockIntersectionObserver = () => {
+  mockIntersectionObservers.length = 0
+  globalThis.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver
+}
+
+const removeMockIntersectionObserver = () => {
+  mockIntersectionObservers.length = 0
+  delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver
+}
 
 function makeAccount(overrides: Partial<Account>): Account {
   return {
@@ -57,6 +106,123 @@ function makeAccount(overrides: Partial<Account>): Account {
 describe('AccountUsageCell', () => {
   beforeEach(() => {
     getUsage.mockReset()
+    removeMockIntersectionObserver()
+  })
+
+  afterAll(() => {
+    if (originalIntersectionObserver) {
+      globalThis.IntersectionObserver = originalIntersectionObserver
+      return
+    }
+    removeMockIntersectionObserver()
+  })
+
+  it('进入可视区域前不会请求 usage，可见后才开始加载', async () => {
+    installMockIntersectionObserver()
+    getUsage.mockResolvedValue({
+      antigravity_quota: {
+        'gemini-3-flash': {
+          utilization: 28,
+          reset_time: '2026-03-01T11:00:00Z'
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 4001,
+          platform: 'antigravity',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).not.toHaveBeenCalled()
+    expect(mockIntersectionObservers).toHaveLength(1)
+
+    mockIntersectionObservers[0].trigger(true)
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledTimes(1)
+    expect(getUsage).toHaveBeenCalledWith(4001)
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Flash|28')
+  })
+
+  it('同一账号短时间内重新挂载时复用已加载的 usage 缓存', async () => {
+    getUsage.mockResolvedValue({
+      antigravity_quota: {
+        'gemini-3-flash': {
+          utilization: 31,
+          reset_time: '2026-03-01T11:00:00Z'
+        }
+      }
+    })
+
+    const firstWrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 4002,
+          platform: 'antigravity',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledTimes(1)
+    expect(firstWrapper.text()).toContain('admin.accounts.usageWindow.gemini3Flash|31')
+
+    firstWrapper.unmount()
+    getUsage.mockClear()
+
+    const secondWrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 4002,
+          platform: 'antigravity',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).not.toHaveBeenCalled()
+    expect(secondWrapper.text()).toContain('admin.accounts.usageWindow.gemini3Flash|31')
   })
 
   it('Antigravity 图片用量会聚合新旧 image 模型', async () => {
