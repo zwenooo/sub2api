@@ -431,7 +431,7 @@ func (h *AccountHandler) GetStatusSummary(c *gin.Context) {
 		{status: service.StatusActive, target: &summary.Active},
 		{status: "rate_limited", target: &summary.RateLimited},
 		{status: service.StatusError, target: &summary.Error},
-		{status: service.StatusInactive, target: &summary.Inactive},
+		{status: service.StatusDisabled, target: &summary.Inactive},
 		{status: "temp_unschedulable", target: &summary.TempUnschedulable},
 	}
 
@@ -1275,7 +1275,7 @@ func (h *AccountHandler) UpdateOpenAIAutoDisableRules(c *gin.Context) {
 func (h *AccountHandler) BatchRefreshPendingOpenAI(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0)
+	allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0, "")
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
