@@ -7,6 +7,8 @@
             v-model:searchQuery="params.search"
             :filters="params"
             :groups="groups"
+            :status-summary="statusSummary"
+            :status-summary-loading="statusSummaryLoading"
             @update:filters="(newFilters) => Object.assign(params, newFilters)"
             @change="debouncedReload"
             @update:searchQuery="debouncedReload"
@@ -370,7 +372,16 @@ import Icon from '@/components/icons/Icon.vue'
 import AccountRuleManagerModal from '@/components/admin/account/AccountRuleManagerModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import type { Account, AccountPlatform, AccountType, Proxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
+import type {
+  Account,
+  AccountPlatform,
+  AccountType,
+  Proxy,
+  AdminGroup,
+  WindowStats,
+  ClaudeModel,
+  AdminAccountStatusSummary
+} from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -454,6 +465,17 @@ const todayStatsLoading = ref(false)
 const todayStatsError = ref<string | null>(null)
 const todayStatsReqSeq = ref(0)
 const pendingTodayStatsRefresh = ref(false)
+const statusSummary = ref<AdminAccountStatusSummary>({
+  total: 0,
+  active: 0,
+  rate_limited: 0,
+  error: 0,
+  inactive: 0,
+  temp_unschedulable: 0
+})
+const statusSummaryLoading = ref(false)
+const statusSummaryReqSeq = ref(0)
+const pendingStatusSummaryRefresh = ref(false)
 
 const accountRuleDraftSource = computed<'request-error' | 'upstream-error' | null>(() => {
   const raw = route.query.rule_draft_source
@@ -475,6 +497,34 @@ const buildDefaultTodayStats = (): WindowStats => ({
   standard_cost: 0,
   user_cost: 0
 })
+
+const refreshStatusSummary = async () => {
+  const reqSeq = ++statusSummaryReqSeq.value
+  statusSummaryLoading.value = true
+  try {
+    const nextSummary = await adminAPI.accounts.getStatusSummary({
+      platform: String(params.platform || ''),
+      type: String(params.type || ''),
+      group: String(params.group || ''),
+      search: String(params.search || '')
+    })
+    if (reqSeq !== statusSummaryReqSeq.value) return
+    statusSummary.value = nextSummary
+  } catch (error) {
+    if (reqSeq !== statusSummaryReqSeq.value) return
+    console.error('Failed to load account status summary:', error)
+  } finally {
+    if (reqSeq === statusSummaryReqSeq.value) {
+      statusSummaryLoading.value = false
+    }
+  }
+}
+
+const refreshStatusSummarySilently = () => {
+  refreshStatusSummary().catch((error) => {
+    console.error('Failed to refresh account status summary:', error)
+  })
+}
 
 const refreshTodayStatsBatch = async () => {
   if (hiddenColumns.has('today_stats')) {
@@ -667,6 +717,7 @@ const load = async () => {
   hasPendingListSync.value = false
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
+  pendingStatusSummaryRefresh.value = false
   if (isFirstLoad.value) {
     requestParams.lite = '1'
   }
@@ -675,21 +726,23 @@ const load = async () => {
     isFirstLoad.value = false
     delete requestParams.lite
   }
-  await refreshTodayStatsBatch()
+  await Promise.all([refreshTodayStatsBatch(), refreshStatusSummary()])
 }
 
 const reload = async () => {
   hasPendingListSync.value = false
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
+  pendingStatusSummaryRefresh.value = false
   await baseReload()
-  await refreshTodayStatsBatch()
+  await Promise.all([refreshTodayStatsBatch(), refreshStatusSummary()])
 }
 
 const debouncedReload = () => {
   hasPendingListSync.value = false
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = true
+  pendingStatusSummaryRefresh.value = true
   baseDebouncedReload()
 }
 
@@ -708,11 +761,19 @@ const handlePageSizeChange = (size: number) => {
 }
 
 watch(loading, (isLoading, wasLoading) => {
-  if (wasLoading && !isLoading && pendingTodayStatsRefresh.value) {
-    pendingTodayStatsRefresh.value = false
-    refreshTodayStatsBatch().catch((error) => {
-      console.error('Failed to refresh account today stats after table load:', error)
-    })
+  if (wasLoading && !isLoading) {
+    if (pendingTodayStatsRefresh.value) {
+      pendingTodayStatsRefresh.value = false
+      refreshTodayStatsBatch().catch((error) => {
+        console.error('Failed to refresh account today stats after table load:', error)
+      })
+    }
+    if (pendingStatusSummaryRefresh.value) {
+      pendingStatusSummaryRefresh.value = false
+      refreshStatusSummary().catch((error) => {
+        console.error('Failed to refresh account status summary after table load:', error)
+      })
+    }
   }
 })
 
@@ -1089,7 +1150,35 @@ const handleBatchRefreshPendingOpenAI = async () => {
 const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => {
   if (accountIds.length === 0) return
   const idSet = new Set(accountIds)
-  accounts.value = accounts.value.map((account) => (idSet.has(account.id) ? { ...account, schedulable } : account))
+  const removedIds: number[] = []
+  const nextAccounts: Account[] = []
+
+  for (const account of accounts.value) {
+    if (!idSet.has(account.id)) {
+      nextAccounts.push(account)
+      continue
+    }
+
+    const updatedAccount = { ...account, schedulable }
+    if (!accountMatchesCurrentFilters(updatedAccount)) {
+      removedIds.push(account.id)
+      continue
+    }
+
+    syncAccountRefs(updatedAccount)
+    nextAccounts.push(updatedAccount)
+  }
+
+  accounts.value = nextAccounts
+
+  if (removedIds.length > 0) {
+    syncPaginationAfterLocalRemoval(removedIds.length)
+    removeSelectedAccounts(removedIds)
+    if (menu.acc?.id && removedIds.includes(menu.acc.id)) {
+      menu.show = false
+      menu.acc = null
+    }
+  }
 }
 const normalizeBulkSchedulableResult = (
   result: {
@@ -1183,6 +1272,7 @@ const handleBulkToggleSchedulable = async (schedulable: boolean) => {
       if (hasIds) clearSelection()
       else setSelectedIds(accountIds)
     }
+    refreshStatusSummarySilently()
   } catch (error) {
     console.error('Failed to bulk toggle schedulable:', error)
     appStore.showError(t('common.error'))
@@ -1230,8 +1320,8 @@ const mergeRuntimeFields = (oldAccount: Account, updatedAccount: Account): Accou
   active_sessions: updatedAccount.active_sessions ?? oldAccount.active_sessions
 })
 
-const syncPaginationAfterLocalRemoval = () => {
-  const nextTotal = Math.max(0, pagination.total - 1)
+const syncPaginationAfterLocalRemoval = (removedCount: number = 1) => {
+  const nextTotal = Math.max(0, pagination.total - removedCount)
   pagination.total = nextTotal
   pagination.pages = nextTotal > 0 ? Math.ceil(nextTotal / pagination.page_size) : 0
 
@@ -1266,6 +1356,7 @@ const patchAccountInList = (updatedAccount: Account) => {
 const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
   enterAutoRefreshSilentWindow()
+  refreshStatusSummarySilently()
 }
 const formatExportTimestamp = () => {
   const now = new Date()
@@ -1333,6 +1424,7 @@ const handleRefresh = async (a: Account) => {
     const updated = await adminAPI.accounts.refreshCredentials(a.id)
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
+    refreshStatusSummarySilently()
   } catch (error) {
     console.error('Failed to refresh credentials:', error)
   }
@@ -1342,6 +1434,7 @@ const handleRecoverState = async (a: Account) => {
     const updated = await adminAPI.accounts.recoverState(a.id)
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
+    refreshStatusSummarySilently()
     appStore.showSuccess(t('admin.accounts.recoverStateSuccess'))
   } catch (error: any) {
     console.error('Failed to recover account state:', error)
@@ -1353,6 +1446,7 @@ const handleResetQuota = async (a: Account) => {
     const updated = await adminAPI.accounts.resetAccountQuota(a.id)
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
+    refreshStatusSummarySilently()
     appStore.showSuccess(t('common.success'))
   } catch (error) {
     console.error('Failed to reset quota:', error)
@@ -1367,6 +1461,7 @@ const handleToggleSchedulable = async (a: Account) => {
     const updated = await adminAPI.accounts.setSchedulable(a.id, nextSchedulable)
     updateSchedulableInList([a.id], updated?.schedulable ?? nextSchedulable)
     enterAutoRefreshSilentWindow()
+    refreshStatusSummarySilently()
   } catch (error) {
     console.error('Failed to toggle schedulable:', error)
     appStore.showError(t('admin.accounts.failedToToggleSchedulable'))
@@ -1380,6 +1475,7 @@ const handleTempUnschedReset = async (updated: Account) => {
   tempUnschedAcc.value = null
   patchAccountInList(updated)
   enterAutoRefreshSilentWindow()
+  refreshStatusSummarySilently()
 }
 const formatExpiresAt = (value: number | null) => {
   if (!value) return '-'

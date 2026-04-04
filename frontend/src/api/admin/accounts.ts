@@ -14,6 +14,7 @@ import type {
   ClaudeModel,
   AccountUsageStatsResponse,
   TempUnschedulableStatus,
+  AdminAccountStatusSummary,
   AdminDataPayload,
   AdminDataImportResult,
   AdminOpenAIAuthImportRequest,
@@ -53,6 +54,18 @@ export async function list(
       ...filters
     },
     signal: options?.signal
+  })
+  return data
+}
+
+export async function getStatusSummary(filters?: {
+  platform?: string
+  type?: string
+  group?: string
+  search?: string
+}): Promise<AdminAccountStatusSummary> {
+  const { data } = await apiClient.get<AdminAccountStatusSummary>('/admin/accounts/status-summary', {
+    params: filters
   })
   return data
 }
@@ -747,6 +760,7 @@ export async function batchRefreshPendingOpenAI(): Promise<BatchOperationResult>
 
 export const accountsAPI = {
   list,
+  getStatusSummary,
   listWithEtag,
   getById,
   create,

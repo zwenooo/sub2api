@@ -168,6 +168,15 @@ type AccountWithConcurrency struct {
 	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // 当前分钟 RPM 计数
 }
 
+type AccountStatusSummaryResponse struct {
+	Total             int64 `json:"total"`
+	Active            int64 `json:"active"`
+	RateLimited       int64 `json:"rate_limited"`
+	Error             int64 `json:"error"`
+	Inactive          int64 `json:"inactive"`
+	TempUnschedulable int64 `json:"temp_unschedulable"`
+}
+
 func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, account *service.Account) AccountWithConcurrency {
 	item := AccountWithConcurrency{
 		Account:            dto.AccountFromService(account),
@@ -365,6 +374,56 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 
 	response.Paginated(c, result, total, page, pageSize)
+}
+
+// GetStatusSummary handles counting accounts by runtime status under the current non-status filters.
+// GET /api/v1/admin/accounts/status-summary
+func (h *AccountHandler) GetStatusSummary(c *gin.Context) {
+	platform := c.Query("platform")
+	accountType := c.Query("type")
+	search := strings.TrimSpace(c.Query("search"))
+	if len(search) > 100 {
+		search = search[:100]
+	}
+
+	var groupID int64
+	if groupIDStr := c.Query("group"); groupIDStr != "" {
+		groupID, _ = strconv.ParseInt(groupIDStr, 10, 64)
+	}
+
+	summary := AccountStatusSummaryResponse{}
+	queries := []struct {
+		status string
+		target *int64
+	}{
+		{status: "", target: &summary.Total},
+		{status: service.StatusActive, target: &summary.Active},
+		{status: "rate_limited", target: &summary.RateLimited},
+		{status: service.StatusError, target: &summary.Error},
+		{status: service.StatusInactive, target: &summary.Inactive},
+		{status: "temp_unschedulable", target: &summary.TempUnschedulable},
+	}
+
+	g, ctx := errgroup.WithContext(c.Request.Context())
+	g.SetLimit(3)
+	for _, query := range queries {
+		query := query
+		g.Go(func() error {
+			_, total, err := h.adminService.ListAccounts(ctx, 1, 1, platform, accountType, query.status, search, groupID)
+			if err != nil {
+				return err
+			}
+			*query.target = total
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, summary)
 }
 
 func buildAccountsListETag(

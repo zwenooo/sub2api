@@ -654,6 +654,15 @@ export interface TempUnschedulableStatus {
   state?: TempUnschedulableState
 }
 
+export interface AdminAccountStatusSummary {
+  total: number
+  active: number
+  rate_limited: number
+  error: number
+  inactive: number
+  temp_unschedulable: number
+}
+
 export interface Account {
   id: number
   name: string
