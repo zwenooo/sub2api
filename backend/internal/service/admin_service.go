@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -50,8 +51,11 @@ type AdminService interface {
 	// API Key management (admin)
 	AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error)
 
+	// ReplaceUserGroup 替换用户的专属分组：授予新分组权限、迁移 Key、移除旧分组权限
+	ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error)
+
 	// Account management
-	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64) ([]Account, int64, error)
+	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, int64, error)
 	GetAccount(ctx context.Context, id int64) (*Account, error)
 	GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
 	CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error)
@@ -62,6 +66,12 @@ type AdminService interface {
 	SetAccountError(ctx context.Context, id int64, errorMsg string) error
 	// EnsureOpenAIPrivacy 检查 OpenAI OAuth 账号 privacy_mode，未设置则尝试关闭训练数据共享并持久化。
 	EnsureOpenAIPrivacy(ctx context.Context, account *Account) string
+	// EnsureAntigravityPrivacy 检查 Antigravity OAuth 账号 privacy_mode，未设置则调用 setUserSettings 并持久化。
+	EnsureAntigravityPrivacy(ctx context.Context, account *Account) string
+	// ForceOpenAIPrivacy 强制重新设置 OpenAI OAuth 账号隐私，无论当前状态。
+	ForceOpenAIPrivacy(ctx context.Context, account *Account) string
+	// ForceAntigravityPrivacy 强制重新设置 Antigravity OAuth 账号隐私，无论当前状态。
+	ForceAntigravityPrivacy(ctx context.Context, account *Account) string
 	SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error)
 	BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error)
 	CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error
@@ -153,6 +163,8 @@ type CreateGroupInput struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch bool
 	DefaultMappedModel    string
+	RequireOAuthOnly      bool
+	RequirePrivacySet     bool
 	// 从指定分组复制账号（创建分组后在同一事务内绑定）
 	CopyAccountsFromGroupIDs []int64
 }
@@ -192,6 +204,8 @@ type UpdateGroupInput struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch *bool
 	DefaultMappedModel    *string
+	RequireOAuthOnly      *bool
+	RequirePrivacySet     *bool
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
 	CopyAccountsFromGroupIDs []int64
 }
@@ -268,6 +282,11 @@ type AdminUpdateAPIKeyGroupIDResult struct {
 	AutoGrantedGroupAccess bool   // true if a new exclusive group permission was auto-added
 	GrantedGroupID         *int64 // the group ID that was auto-granted
 	GrantedGroupName       string // the group name that was auto-granted
+}
+
+// ReplaceUserGroupResult 分组替换操作的结果
+type ReplaceUserGroupResult struct {
+	MigratedKeys int64 // 迁移的 Key 数量
 }
 
 // BulkUpdateAccountsResult is the aggregated response for bulk updates.
@@ -368,6 +387,10 @@ type ProxyExitInfoProber interface {
 	ProbeProxy(ctx context.Context, proxyURL string) (*ProxyExitInfo, int64, error)
 }
 
+type groupExistenceBatchReader interface {
+	ExistsByIDs(ctx context.Context, ids []int64) (map[int64]bool, error)
+}
+
 type proxyQualityTarget struct {
 	Target          string
 	URL             string
@@ -443,10 +466,6 @@ type adminServiceImpl struct {
 
 type userGroupRateBatchReader interface {
 	GetByUserIDs(ctx context.Context, userIDs []int64) (map[int64]map[int64]float64, error)
-}
-
-type groupExistenceBatchReader interface {
-	ExistsByIDs(ctx context.Context, ids []int64) (map[int64]bool, error)
 }
 
 // NewAdminService creates a new AdminService
@@ -927,10 +946,33 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		SupportedModelScopes:            input.SupportedModelScopes,
 		SoraStorageQuotaBytes:           input.SoraStorageQuotaBytes,
 		AllowMessagesDispatch:           input.AllowMessagesDispatch,
+		RequireOAuthOnly:                input.RequireOAuthOnly,
+		RequirePrivacySet:               input.RequirePrivacySet,
 		DefaultMappedModel:              input.DefaultMappedModel,
 	}
 	if err := s.groupRepo.Create(ctx, group); err != nil {
 		return nil, err
+	}
+
+	// require_oauth_only: 过滤掉 apikey 类型账号
+	if group.RequireOAuthOnly && (group.Platform == PlatformOpenAI || group.Platform == PlatformAntigravity || group.Platform == PlatformAnthropic || group.Platform == PlatformGemini) && len(accountIDsToCopy) > 0 {
+		accounts, err := s.accountRepo.GetByIDs(ctx, accountIDsToCopy)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch accounts for oauth filter: %w", err)
+		}
+		oauthIDs := make(map[int64]struct{}, len(accounts))
+		for _, acc := range accounts {
+			if acc.Type != AccountTypeAPIKey {
+				oauthIDs[acc.ID] = struct{}{}
+			}
+		}
+		var filtered []int64
+		for _, aid := range accountIDsToCopy {
+			if _, ok := oauthIDs[aid]; ok {
+				filtered = append(filtered, aid)
+			}
+		}
+		accountIDsToCopy = filtered
 	}
 
 	// 如果有需要复制的账号，绑定到新分组
@@ -1140,6 +1182,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.AllowMessagesDispatch != nil {
 		group.AllowMessagesDispatch = *input.AllowMessagesDispatch
 	}
+	if input.RequireOAuthOnly != nil {
+		group.RequireOAuthOnly = *input.RequireOAuthOnly
+	}
+	if input.RequirePrivacySet != nil {
+		group.RequirePrivacySet = *input.RequirePrivacySet
+	}
 	if input.DefaultMappedModel != nil {
 		group.DefaultMappedModel = *input.DefaultMappedModel
 	}
@@ -1185,6 +1233,27 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		// 先清空当前分组的所有账号绑定
 		if _, err := s.groupRepo.DeleteAccountGroupsByGroupID(ctx, id); err != nil {
 			return nil, fmt.Errorf("failed to clear existing account bindings: %w", err)
+		}
+
+		// require_oauth_only: 过滤掉 apikey 类型账号
+		if group.RequireOAuthOnly && (group.Platform == PlatformOpenAI || group.Platform == PlatformAntigravity || group.Platform == PlatformAnthropic || group.Platform == PlatformGemini) && len(accountIDsToCopy) > 0 {
+			accounts, err := s.accountRepo.GetByIDs(ctx, accountIDsToCopy)
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch accounts for oauth filter: %w", err)
+			}
+			oauthIDs := make(map[int64]struct{}, len(accounts))
+			for _, acc := range accounts {
+				if acc.Type != AccountTypeAPIKey {
+					oauthIDs[acc.ID] = struct{}{}
+				}
+			}
+			var filtered []int64
+			for _, aid := range accountIDsToCopy {
+				if _, ok := oauthIDs[aid]; ok {
+					filtered = append(filtered, aid)
+				}
+			}
+			accountIDsToCopy = filtered
 		}
 
 		// 再绑定源分组的账号
@@ -1377,10 +1446,75 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 	return result, nil
 }
 
+// ReplaceUserGroup 替换用户的专属分组
+func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error) {
+	if oldGroupID == newGroupID {
+		return nil, infraerrors.BadRequest("SAME_GROUP", "old and new group must be different")
+	}
+
+	// 验证新分组存在且为活跃的专属标准分组
+	newGroup, err := s.groupRepo.GetByID(ctx, newGroupID)
+	if err != nil {
+		return nil, err
+	}
+	if newGroup.Status != StatusActive {
+		return nil, infraerrors.BadRequest("GROUP_NOT_ACTIVE", "target group is not active")
+	}
+	if !newGroup.IsExclusive {
+		return nil, infraerrors.BadRequest("GROUP_NOT_EXCLUSIVE", "target group is not exclusive")
+	}
+	if newGroup.IsSubscriptionType() {
+		return nil, infraerrors.BadRequest("GROUP_IS_SUBSCRIPTION", "subscription groups are not supported for replacement")
+	}
+
+	// 事务保证原子性
+	if s.entClient == nil {
+		return nil, fmt.Errorf("entClient is nil, cannot perform group replacement")
+	}
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	opCtx := dbent.NewTxContext(ctx, tx)
+
+	// 1. 授予新分组权限
+	if err := s.userRepo.AddGroupToAllowedGroups(opCtx, userID, newGroupID); err != nil {
+		return nil, fmt.Errorf("add new group to allowed groups: %w", err)
+	}
+
+	// 2. 迁移绑定旧分组的 Key 到新分组
+	migrated, err := s.apiKeyRepo.UpdateGroupIDByUserAndGroup(opCtx, userID, oldGroupID, newGroupID)
+	if err != nil {
+		return nil, fmt.Errorf("migrate api keys: %w", err)
+	}
+
+	// 3. 移除旧分组权限
+	if err := s.userRepo.RemoveGroupFromUserAllowedGroups(opCtx, userID, oldGroupID); err != nil {
+		return nil, fmt.Errorf("remove old group from allowed groups: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	// 失效该用户所有 Key 的认证缓存
+	if s.authCacheInvalidator != nil {
+		keys, keyErr := s.apiKeyRepo.ListKeysByUserID(ctx, userID)
+		if keyErr == nil {
+			for _, k := range keys {
+				s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, k)
+			}
+		}
+	}
+
+	return &ReplaceUserGroupResult{MigratedKeys: migrated}, nil
+}
+
 // Account management implementations
-func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64) ([]Account, int64, error) {
+func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
-	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, platform, accountType, status, search, groupID)
+	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, platform, accountType, status, search, groupID, privacyMode)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1504,6 +1638,31 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
+	// OAuth 账号：创建后异步设置隐私。
+	// 使用 Ensure（幂等）而非 Force：新建账号 Extra 为空时效果相同，但更安全。
+	if account.Type == AccountTypeOAuth {
+		switch account.Platform {
+		case PlatformOpenAI:
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("create_account_openai_privacy_panic", "account_id", account.ID, "recover", r)
+					}
+				}()
+				s.EnsureOpenAIPrivacy(context.Background(), account)
+			}()
+		case PlatformAntigravity:
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("create_account_antigravity_privacy_panic", "account_id", account.ID, "recover", r)
+					}
+				}()
+				s.EnsureAntigravityPrivacy(context.Background(), account)
+			}()
+		}
+	}
+
 	return account, nil
 }
 
@@ -1512,6 +1671,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if err != nil {
 		return nil, err
 	}
+	wasOveragesEnabled := account.IsOveragesEnabled()
 
 	if input.Name != "" {
 		account.Name = input.Name
@@ -1525,7 +1685,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if len(input.Credentials) > 0 {
 		account.Credentials = input.Credentials
 	}
-	if len(input.Extra) > 0 {
+	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
+	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
+	if input.Extra != nil {
 		// 保留配额用量字段，防止编辑账号时意外重置
 		for _, key := range []string{"quota_used", "quota_daily_used", "quota_daily_start", "quota_weekly_used", "quota_weekly_start"} {
 			if v, ok := account.Extra[key]; ok {
@@ -1533,6 +1695,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			}
 		}
 		account.Extra = input.Extra
+		if account.Platform == PlatformAntigravity && wasOveragesEnabled && !account.IsOveragesEnabled() {
+			delete(account.Extra, "antigravity_credits_overages") // 清理旧版 overages 运行态
+			// 清除 AICredits 限流 key
+			if rawLimits, ok := account.Extra[modelRateLimitsKey].(map[string]any); ok {
+				delete(rawLimits, creditsExhaustedKey)
+			}
+		}
+		if account.Platform == PlatformAntigravity && !wasOveragesEnabled && account.IsOveragesEnabled() {
+			delete(account.Extra, modelRateLimitsKey)
+			delete(account.Extra, "antigravity_credits_overages") // 清理旧版 overages 运行态
+		}
 		// 校验并预计算固定时间重置的下次重置时间
 		if err := ValidateQuotaResetConfig(account.Extra); err != nil {
 			return nil, err
@@ -1767,6 +1940,18 @@ func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int
 
 func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Account, error) {
 	if err := s.accountRepo.ClearError(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := s.accountRepo.ClearRateLimit(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := s.accountRepo.ClearAntigravityQuotaScopes(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := s.accountRepo.ClearModelRateLimits(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
 		return nil, err
 	}
 	return s.accountRepo.GetByID(ctx, id)
@@ -2544,10 +2729,8 @@ func (s *adminServiceImpl) EnsureOpenAIPrivacy(ctx context.Context, account *Acc
 	if s.privacyClientFactory == nil {
 		return ""
 	}
-	if account.Extra != nil {
-		if mode, _ := account.Extra["privacy_mode"].(string); strings.TrimSpace(mode) == PrivacyModeTrainingOff {
-			return ""
-		}
+	if shouldSkipOpenAIPrivacyEnsure(account.Extra) {
+		return ""
 	}
 
 	token, _ := account.Credentials["access_token"].(string)
@@ -2568,5 +2751,115 @@ func (s *adminServiceImpl) EnsureOpenAIPrivacy(ctx context.Context, account *Acc
 	}
 
 	_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{"privacy_mode": mode})
+	return mode
+}
+
+// ForceOpenAIPrivacy 强制重新设置 OpenAI OAuth 账号隐私，无论当前状态。
+func (s *adminServiceImpl) ForceOpenAIPrivacy(ctx context.Context, account *Account) string {
+	if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+		return ""
+	}
+	if s.privacyClientFactory == nil {
+		return ""
+	}
+
+	token, _ := account.Credentials["access_token"].(string)
+	if token == "" {
+		return ""
+	}
+
+	var proxyURL string
+	if account.ProxyID != nil {
+		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
+			proxyURL = p.URL()
+		}
+	}
+
+	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)
+	if mode == "" {
+		return ""
+	}
+
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{"privacy_mode": mode}); err != nil {
+		logger.LegacyPrintf("service.admin", "force_update_openai_privacy_mode_failed: account_id=%d err=%v", account.ID, err)
+		return mode
+	}
+	if account.Extra == nil {
+		account.Extra = make(map[string]any)
+	}
+	account.Extra["privacy_mode"] = mode
+	return mode
+}
+
+// EnsureAntigravityPrivacy 检查 Antigravity OAuth 账号隐私状态。
+// 仅当 privacy_mode 已成功设置（"privacy_set"）时跳过；
+// 未设置或之前失败（"privacy_set_failed"）均会重试。
+func (s *adminServiceImpl) EnsureAntigravityPrivacy(ctx context.Context, account *Account) string {
+	if account.Platform != PlatformAntigravity || account.Type != AccountTypeOAuth {
+		return ""
+	}
+	if account.Extra != nil {
+		if existing, ok := account.Extra["privacy_mode"].(string); ok && existing == AntigravityPrivacySet {
+			return existing
+		}
+	}
+
+	token, _ := account.Credentials["access_token"].(string)
+	if token == "" {
+		return ""
+	}
+
+	projectID, _ := account.Credentials["project_id"].(string)
+
+	var proxyURL string
+	if account.ProxyID != nil {
+		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
+			proxyURL = p.URL()
+		}
+	}
+
+	mode := setAntigravityPrivacy(ctx, token, projectID, proxyURL)
+	if mode == "" {
+		return ""
+	}
+
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{"privacy_mode": mode}); err != nil {
+		logger.LegacyPrintf("service.admin", "update_antigravity_privacy_mode_failed: account_id=%d err=%v", account.ID, err)
+		return mode
+	}
+	applyAntigravityPrivacyMode(account, mode)
+	return mode
+}
+
+// ForceAntigravityPrivacy 强制重新设置 Antigravity OAuth 账号隐私，无论当前状态。
+func (s *adminServiceImpl) ForceAntigravityPrivacy(ctx context.Context, account *Account) string {
+	if account.Platform != PlatformAntigravity || account.Type != AccountTypeOAuth {
+		return ""
+	}
+
+	token, _ := account.Credentials["access_token"].(string)
+	if token == "" {
+		return ""
+	}
+
+	projectID, _ := account.Credentials["project_id"].(string)
+
+	var proxyURL string
+	if account.ProxyID != nil {
+		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
+			proxyURL = p.URL()
+		}
+	}
+
+	mode := setAntigravityPrivacy(ctx, token, projectID, proxyURL)
+	if mode == "" {
+		return ""
+	}
+
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{"privacy_mode": mode}); err != nil {
+		logger.LegacyPrintf("service.admin", "force_update_antigravity_privacy_mode_failed: account_id=%d err=%v", account.ID, err)
+		return mode
+	}
+	applyAntigravityPrivacyMode(account, mode)
 	return mode
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -16,7 +17,9 @@ import (
 
 // GroupHandler handles admin group management
 type GroupHandler struct {
-	adminService service.AdminService
+	adminService         service.AdminService
+	dashboardService     *service.DashboardService
+	groupCapacityService *service.GroupCapacityService
 }
 
 type optionalLimitField struct {
@@ -69,9 +72,11 @@ func (f optionalLimitField) ToServiceInput() *float64 {
 }
 
 // NewGroupHandler creates a new admin group handler
-func NewGroupHandler(adminService service.AdminService) *GroupHandler {
+func NewGroupHandler(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService) *GroupHandler {
 	return &GroupHandler{
-		adminService: adminService,
+		adminService:         adminService,
+		dashboardService:     dashboardService,
+		groupCapacityService: groupCapacityService,
 	}
 }
 
@@ -107,6 +112,8 @@ type CreateGroupRequest struct {
 	SoraStorageQuotaBytes int64 `json:"sora_storage_quota_bytes"`
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch bool   `json:"allow_messages_dispatch"`
+	RequireOAuthOnly      bool   `json:"require_oauth_only"`
+	RequirePrivacySet     bool   `json:"require_privacy_set"`
 	DefaultMappedModel    string `json:"default_mapped_model"`
 	// 从指定分组复制账号（创建后自动绑定）
 	CopyAccountsFromGroupIDs []int64 `json:"copy_accounts_from_group_ids"`
@@ -145,6 +152,8 @@ type UpdateGroupRequest struct {
 	SoraStorageQuotaBytes *int64 `json:"sora_storage_quota_bytes"`
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch *bool   `json:"allow_messages_dispatch"`
+	RequireOAuthOnly      *bool   `json:"require_oauth_only"`
+	RequirePrivacySet     *bool   `json:"require_privacy_set"`
 	DefaultMappedModel    *string `json:"default_mapped_model"`
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
 	CopyAccountsFromGroupIDs []int64 `json:"copy_accounts_from_group_ids"`
@@ -262,6 +271,8 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		SupportedModelScopes:            req.SupportedModelScopes,
 		SoraStorageQuotaBytes:           req.SoraStorageQuotaBytes,
 		AllowMessagesDispatch:           req.AllowMessagesDispatch,
+		RequireOAuthOnly:                req.RequireOAuthOnly,
+		RequirePrivacySet:               req.RequirePrivacySet,
 		DefaultMappedModel:              req.DefaultMappedModel,
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
 	})
@@ -315,6 +326,8 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		SupportedModelScopes:            req.SupportedModelScopes,
 		SoraStorageQuotaBytes:           req.SoraStorageQuotaBytes,
 		AllowMessagesDispatch:           req.AllowMessagesDispatch,
+		RequireOAuthOnly:                req.RequireOAuthOnly,
+		RequirePrivacySet:               req.RequirePrivacySet,
 		DefaultMappedModel:              req.DefaultMappedModel,
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
 	})
@@ -361,6 +374,33 @@ func (h *GroupHandler) GetStats(c *gin.Context) {
 		"total_cost":      0.0,
 	})
 	_ = groupID // TODO: implement actual stats
+}
+
+// GetUsageSummary returns today's and cumulative cost for all groups.
+// GET /api/v1/admin/groups/usage-summary?timezone=Asia/Shanghai
+func (h *GroupHandler) GetUsageSummary(c *gin.Context) {
+	userTZ := c.Query("timezone")
+	now := timezone.NowInUserLocation(userTZ)
+	todayStart := timezone.StartOfDayInUserLocation(now, userTZ)
+
+	results, err := h.dashboardService.GetGroupUsageSummary(c.Request.Context(), todayStart)
+	if err != nil {
+		response.Error(c, 500, "Failed to get group usage summary")
+		return
+	}
+
+	response.Success(c, results)
+}
+
+// GetCapacitySummary returns aggregated capacity (concurrency/sessions/RPM) for all active groups.
+// GET /api/v1/admin/groups/capacity-summary
+func (h *GroupHandler) GetCapacitySummary(c *gin.Context) {
+	results, err := h.groupCapacityService.GetAllGroupCapacity(c.Request.Context())
+	if err != nil {
+		response.Error(c, 500, "Failed to get group capacity summary")
+		return
+	}
+	response.Success(c, results)
 }
 
 // GetGroupAPIKeys handles getting API keys in a group

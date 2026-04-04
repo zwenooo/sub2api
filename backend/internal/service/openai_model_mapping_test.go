@@ -68,3 +68,34 @@ func TestResolveOpenAIForwardModel(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveOpenAIForwardModel_PreventsClaudeModelFromFallingBackToGpt51(t *testing.T) {
+	account := &Account{
+		Credentials: map[string]any{},
+	}
+
+	withoutDefault := normalizeCodexModel(resolveOpenAIForwardModel(account, "claude-opus-4-6", ""))
+	if withoutDefault != "gpt-5.1" {
+		t.Fatalf("normalizeCodexModel(...) = %q, want %q", withoutDefault, "gpt-5.1")
+	}
+
+	withDefault := normalizeCodexModel(resolveOpenAIForwardModel(account, "claude-opus-4-6", "gpt-5.4"))
+	if withDefault != "gpt-5.4" {
+		t.Fatalf("normalizeCodexModel(...) = %q, want %q", withDefault, "gpt-5.4")
+	}
+}
+
+func TestNormalizeCodexModel(t *testing.T) {
+	cases := map[string]string{
+		"gpt-5.3-codex-spark":       "gpt-5.3-codex",
+		"gpt-5.3-codex-spark-high":  "gpt-5.3-codex",
+		"gpt-5.3-codex-spark-xhigh": "gpt-5.3-codex",
+		"gpt-5.3":                   "gpt-5.3-codex",
+	}
+
+	for input, expected := range cases {
+		if got := normalizeCodexModel(input); got != expected {
+			t.Fatalf("normalizeCodexModel(%q) = %q, want %q", input, got, expected)
+		}
+	}
+}

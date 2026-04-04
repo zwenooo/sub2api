@@ -84,6 +84,12 @@ export interface CustomMenuItem {
   sort_order: number
 }
 
+export interface CustomEndpoint {
+  name: string
+  endpoint: string
+  description: string
+}
+
 export interface PublicSettings {
   registration_enabled: boolean
   email_verify_enabled: boolean
@@ -104,6 +110,7 @@ export interface PublicSettings {
   purchase_subscription_enabled: boolean
   purchase_subscription_url: string
   custom_menu_items: CustomMenuItem[]
+  custom_endpoints: CustomEndpoint[]
   linuxdo_oauth_enabled: boolean
   sora_client_enabled: boolean
   backend_mode_enabled: boolean
@@ -392,6 +399,8 @@ export interface Group {
   fallback_group_id_on_invalid_request: number | null
   // OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
   allow_messages_dispatch?: boolean
+  require_oauth_only: boolean
+  require_privacy_set: boolean
   created_at: string
   updated_at: string
 }
@@ -403,12 +412,16 @@ export interface AdminGroup extends Group {
 
   // MCP XML 协议注入（仅 antigravity 平台使用）
   mcp_xml_inject: boolean
+  // Claude usage 模拟开关（仅 anthropic 平台使用）
+  simulate_claude_max_enabled: boolean
 
   // 支持的模型系列（仅 antigravity 平台使用）
   supported_model_scopes?: string[]
 
   // 分组下账号数量（仅管理员可见）
   account_count?: number
+  active_account_count?: number
+  rate_limited_account_count?: number
 
   // OpenAI Messages 调度配置（仅 openai 平台使用）
   default_mapped_model?: string
@@ -497,7 +510,10 @@ export interface CreateGroupRequest {
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
   mcp_xml_inject?: boolean
+  simulate_claude_max_enabled?: boolean
   supported_model_scopes?: string[]
+  require_oauth_only?: boolean
+  require_privacy_set?: boolean
   // 从指定分组复制账号
   copy_accounts_from_group_ids?: number[]
 }
@@ -525,7 +541,10 @@ export interface UpdateGroupRequest {
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
   mcp_xml_inject?: boolean
+  simulate_claude_max_enabled?: boolean
   supported_model_scopes?: string[]
+  require_oauth_only?: boolean
+  require_privacy_set?: boolean
   copy_accounts_from_group_ids?: number[]
 }
 
@@ -720,6 +739,7 @@ export interface Account {
 
   // TLS指纹伪装（仅 Anthropic OAuth/SetupToken 账号有效）
   enable_tls_fingerprint?: boolean | null
+  tls_fingerprint_profile_id?: number | null
 
   // 会话ID伪装（仅 Anthropic OAuth/SetupToken 账号有效）
   // 启用后将在15分钟内固定 metadata.user_id 中的 session ID
@@ -728,6 +748,16 @@ export interface Account {
   // 缓存 TTL 强制替换（仅 Anthropic OAuth/SetupToken 账号有效）
   cache_ttl_override_enabled?: boolean | null
   cache_ttl_override_target?: string | null
+
+  // 自定义 Base URL 中继转发（仅 Anthropic OAuth/SetupToken 账号有效）
+  custom_base_url_enabled?: boolean | null
+  custom_base_url?: string | null
+
+  // 客户端亲和调度（仅 Anthropic/Antigravity 平台有效）
+  // 启用后新会话会优先调度到客户端之前使用过的账号
+  client_affinity_enabled?: boolean | null
+  affinity_client_count?: number | null
+  affinity_clients?: string[] | null
 
   // API Key 账号配额限制
   quota_limit?: number | null
@@ -778,6 +808,7 @@ export interface AntigravityModelQuota {
 }
 
 export interface AccountUsageInfo {
+  source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null
   seven_day: UsageProgress | null
@@ -789,6 +820,11 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  ai_credits?: Array<{
+    credit_type?: string
+    amount?: number
+    minimum_balance?: number
+  }> | null
   // Antigravity 403 forbidden 状态
   is_forbidden?: boolean
   forbidden_reason?: string
@@ -1046,6 +1082,9 @@ export interface UsageLog {
   // Cache TTL Override
   cache_ttl_overridden: boolean
 
+  // 计费模式
+  billing_mode?: string | null
+
   created_at: string
 
   user?: User
@@ -1060,6 +1099,9 @@ export interface UsageLogAccountSummary {
 }
 
 export interface AdminUsageLog extends UsageLog {
+  upstream_model?: string | null
+  model_mapping_chain?: string | null
+
   // 账号计费倍率（仅管理员可见）
   account_rate_multiplier?: number | null
 
@@ -1238,6 +1280,15 @@ export interface GroupStat {
   actual_cost: number // 实际扣除
 }
 
+export interface UserBreakdownItem {
+  user_id: number
+  email: string
+  requests: number
+  total_tokens: number
+  cost: number
+  actual_cost: number
+}
+
 export interface UserUsageTrendPoint {
   date: string
   user_id: number
@@ -1260,6 +1311,8 @@ export interface UserSpendingRankingItem {
 export interface UserSpendingRankingResponse {
   ranking: UserSpendingRankingItem[]
   total_actual_cost: number
+  total_requests: number
+  total_tokens: number
   start_date: string
   end_date: string
 }

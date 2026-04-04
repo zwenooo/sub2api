@@ -85,6 +85,15 @@
               </button>
 
               <button
+                @click="showErrorPassthrough = true"
+                class="btn btn-secondary"
+                :title="t('admin.errorPassthrough.title')"
+              >
+                <Icon name="shield" size="md" class="mr-1.5" />
+                <span class="hidden md:inline">{{ t('admin.errorPassthrough.title') }}</span>
+              </button>
+
+              <button
                 @click="handleBatchRefreshPendingOpenAI"
                 class="btn btn-secondary"
                 :disabled="batchRefreshingPendingOpenAI"
@@ -103,6 +112,16 @@
                       : t('admin.accounts.batchRefreshPendingOpenAI')
                   }}
                 </span>
+              </button>
+
+              <!-- TLS Fingerprint Profiles -->
+              <button
+                @click="showTLSFingerprintProfiles = true"
+                class="btn btn-secondary"
+                :title="t('admin.tlsFingerprintProfiles.title')"
+              >
+                <Icon name="lock" size="md" class="mr-1.5" />
+                <span class="hidden md:inline">{{ t('admin.tlsFingerprintProfiles.title') }}</span>
               </button>
 
               <!-- Column Settings Dropdown -->
@@ -207,7 +226,7 @@
           </template>
           <template #cell-platform_type="{ row }">
             <div class="flex flex-wrap items-center gap-1">
-              <PlatformTypeBadge :platform="row.platform" :type="row.type" :plan-type="row.credentials?.plan_type" :privacy-mode="row.extra?.privacy_mode" />
+              <PlatformTypeBadge :platform="row.platform" :type="row.type" :plan-type="row.credentials?.plan_type" :privacy-mode="row.extra?.privacy_mode" :subscription-expires-at="row.credentials?.subscription_expires_at" />
               <span
                 v-if="getAntigravityTierLabel(row)"
                 :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', getAntigravityTierClass(row)]"
@@ -238,7 +257,12 @@
             <AccountGroupsCell :groups="row.groups" :max-display="4" />
           </template>
           <template #cell-usage="{ row }">
-            <AccountUsageCell :account="row" />
+            <AccountUsageCell
+              :account="row"
+              :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
+              :today-stats-loading="todayStatsLoading"
+              :manual-refresh-token="usageManualRefreshToken"
+            />
           </template>
           <template #cell-proxy="{ row }">
             <div v-if="row.proxy" class="flex items-center gap-2">
@@ -306,7 +330,7 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportOpenAIAuthModal :show="showImportOpenAIAuth" :groups="groups" :proxies="proxies" @close="showImportOpenAIAuth = false" @imported="handleOpenAIAuthImported" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
@@ -330,6 +354,8 @@
       :show="showOpenAIAutoDisableRules"
       @close="showOpenAIAutoDisableRules = false"
     />
+    <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
+    <TLSFingerprintProfilesModal :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
   </AppLayout>
 </template>
 
@@ -370,13 +396,15 @@ import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import AccountRuleManagerModal from '@/components/admin/account/AccountRuleManagerModal.vue'
+import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
+import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import type {
   Account,
   AccountPlatform,
   AccountType,
-  Proxy,
+  Proxy as AccountProxy,
   AdminGroup,
   WindowStats,
   ClaudeModel,
@@ -389,7 +417,7 @@ const authStore = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
-const proxies = ref<Proxy[]>([])
+const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
 const accountTableRef = ref<HTMLElement | null>(null)
 const selPlatforms = computed<AccountPlatform[]>(() => {
@@ -423,6 +451,8 @@ const showTest = ref(false)
 const showStats = ref(false)
 const showAccountRules = ref(false)
 const showOpenAIAutoDisableRules = ref(false)
+const showErrorPassthrough = ref(false)
+const showTLSFingerprintProfiles = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
@@ -489,6 +519,7 @@ const accountRuleDraftID = computed<number | null>(() => {
   const parsed = Number.parseInt(value || '', 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 })
+const usageManualRefreshToken = ref(0)
 
 const buildDefaultTodayStats = (): WindowStats => ({
   requests: 0,
@@ -506,7 +537,8 @@ const refreshStatusSummary = async () => {
       platform: String(params.platform || ''),
       type: String(params.type || ''),
       group: String(params.group || ''),
-      search: String(params.search || '')
+      search: String(params.search || ''),
+      privacy_mode: String(params.privacy_mode || '')
     })
     if (reqSeq !== statusSummaryReqSeq.value) return
     statusSummary.value = nextSummary
@@ -527,7 +559,11 @@ const refreshStatusSummarySilently = () => {
 }
 
 const refreshTodayStatsBatch = async () => {
-  if (hiddenColumns.has('today_stats')) {
+  // Why this checks both columns:
+  // - today_stats column shows dedicated today's metrics.
+  // - usage column also embeds today's stats for Key/Bedrock rows.
+  // So we only skip fetching when BOTH columns are hidden.
+  if (hiddenColumns.has('today_stats') && hiddenColumns.has('usage')) {
     todayStatsLoading.value = false
     todayStatsError.value = null
     return
@@ -579,13 +615,19 @@ const loadSavedColumns = () => {
     const saved = localStorage.getItem(HIDDEN_COLUMNS_KEY)
     if (saved) {
       const parsed = JSON.parse(saved) as string[]
-      parsed.forEach(key => hiddenColumns.add(key))
+      parsed.forEach(key => {
+        hiddenColumns.add(key)
+      })
     } else {
-      DEFAULT_HIDDEN_COLUMNS.forEach(key => hiddenColumns.add(key))
+      DEFAULT_HIDDEN_COLUMNS.forEach(key => {
+        hiddenColumns.add(key)
+      })
     }
   } catch (e) {
     console.error('Failed to load saved columns:', e)
-    DEFAULT_HIDDEN_COLUMNS.forEach(key => hiddenColumns.add(key))
+    DEFAULT_HIDDEN_COLUMNS.forEach(key => {
+      hiddenColumns.add(key)
+    })
   }
 }
 
@@ -659,7 +701,7 @@ const toggleColumn = (key: string) => {
     hiddenColumns.add(key)
   }
   saveColumnsToStorage()
-  if (key === 'today_stats' && wasHidden) {
+  if ((key === 'today_stats' || key === 'usage') && wasHidden) {
     refreshTodayStatsBatch().catch((error) => {
       console.error('Failed to load account today stats after showing column:', error)
     })
@@ -680,7 +722,7 @@ const {
   handlePageSizeChange: baseHandlePageSizeChange
 } = useTableLoader<Account, any>({
   fetchFn: adminAPI.accounts.list,
-  initialParams: { platform: '', type: '', status: '', group: '', search: '' }
+  initialParams: { platform: '', type: '', status: '', privacy_mode: '', group: '', search: '' }
 })
 
 const {
@@ -793,7 +835,9 @@ const isAnyModalOpen = computed(() => {
     showStats.value ||
     showSchedulePanel.value ||
     showAccountRules.value ||
-    showOpenAIAutoDisableRules.value
+    showOpenAIAutoDisableRules.value ||
+    showErrorPassthrough.value ||
+    showTLSFingerprintProfiles.value
   )
 })
 
@@ -892,6 +936,8 @@ const refreshAccountsIncrementally = async () => {
         platform?: string
         type?: string
         status?: string
+        privacy_mode?: string
+        group?: string
         search?: string
 
       },
@@ -918,11 +964,15 @@ const refreshAccountsIncrementally = async () => {
 
 const handleManualRefresh = async () => {
   await load()
+  // Force usage cells to refetch /usage on explicit user refresh.
+  usageManualRefreshToken.value += 1
 }
 
 const syncPendingListChanges = async () => {
   hasPendingListSync.value = false
   await load()
+  // Keep behavior consistent with manual refresh.
+  usageManualRefreshToken.value += 1
 }
 
 const { pause: pauseAutoRefresh, resume: resumeAutoRefresh } = useIntervalFn(
@@ -1038,7 +1088,8 @@ const openMenu = (a: Account, e: MouseEvent) => {
     const viewportWidth = window.innerWidth
     const viewportHeight = window.innerHeight
 
-    let left, top
+    let left: number
+    let top: number
 
     if (viewportWidth < 768) {
       // 居中显示,水平位置
@@ -1450,6 +1501,18 @@ const handleResetQuota = async (a: Account) => {
     appStore.showSuccess(t('common.success'))
   } catch (error) {
     console.error('Failed to reset quota:', error)
+  }
+}
+const handleSetPrivacy = async (a: Account) => {
+  try {
+    const updated = await adminAPI.accounts.setPrivacy(a.id)
+    patchAccountInList(updated)
+    enterAutoRefreshSilentWindow()
+    refreshStatusSummarySilently()
+    appStore.showSuccess(t('common.success'))
+  } catch (error: any) {
+    console.error('Failed to set privacy:', error)
+    appStore.showError(error?.response?.data?.message || t('admin.accounts.privacyFailed'))
   }
 }
 const handleDelete = (a: Account) => { deletingAcc.value = a; showDeleteDialog.value = true }

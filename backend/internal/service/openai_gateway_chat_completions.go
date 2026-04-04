@@ -43,23 +43,40 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	clientStream := chatReq.Stream
 	includeUsage := chatReq.StreamOptions != nil && chatReq.StreamOptions.IncludeUsage
 
-	// 2. Convert to Responses and forward
+	// 2. Resolve model mapping early so compat prompt_cache_key injection can
+	// derive a stable seed from the final upstream model family.
+	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
+	upstreamModel := normalizeCodexModel(billingModel)
+
+	promptCacheKey = strings.TrimSpace(promptCacheKey)
+	compatPromptCacheInjected := false
+	if promptCacheKey == "" && account.Type == AccountTypeOAuth && shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
+		promptCacheKey = deriveCompatPromptCacheKey(&chatReq, upstreamModel)
+		compatPromptCacheInjected = promptCacheKey != ""
+	}
+
+	// 3. Convert to Responses and forward
 	// ChatCompletionsToResponses always sets Stream=true (upstream always streams).
 	responsesReq, err := apicompat.ChatCompletionsToResponses(&chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("convert chat completions to responses: %w", err)
 	}
+	responsesReq.Model = upstreamModel
 
-	// 3. Model mapping
-	mappedModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
-	responsesReq.Model = mappedModel
-
-	logger.L().Debug("openai chat_completions: model mapping applied",
+	logFields := []zap.Field{
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),
-		zap.String("mapped_model", mappedModel),
+		zap.String("billing_model", billingModel),
+		zap.String("upstream_model", upstreamModel),
 		zap.Bool("stream", clientStream),
-	)
+	}
+	if compatPromptCacheInjected {
+		logFields = append(logFields,
+			zap.Bool("compat_prompt_cache_key_injected", true),
+			zap.String("compat_prompt_cache_key_sha256", hashSensitiveValueForLog(promptCacheKey)),
+		)
+	}
+	logger.L().Debug("openai chat_completions: model mapping applied", logFields...)
 
 	// 4. Marshal Responses request body, then apply OAuth codex transform
 	responsesBody, err := json.Marshal(responsesReq)
@@ -73,6 +90,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
 		}
 		codexResult := applyCodexOAuthTransform(reqBody, false, false)
+		if codexResult.NormalizedModel != "" {
+			upstreamModel = codexResult.NormalizedModel
+		}
 		if codexResult.PromptCacheKey != "" {
 			promptCacheKey = codexResult.PromptCacheKey
 		} else if promptCacheKey != "" {
@@ -142,9 +162,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleChatStreamingResponse(resp, c, originalModel, mappedModel, includeUsage, startTime)
+		result, handleErr = s.handleChatStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, includeUsage, startTime)
 	} else {
-		result, handleErr = s.handleChatBufferedStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleChatBufferedStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -186,7 +206,8 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
 	originalModel string,
-	mappedModel string,
+	billingModel string,
+	upstreamModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -254,12 +275,13 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	c.JSON(http.StatusOK, chatResp)
 
 	return &OpenAIForwardResult{
-		RequestID:    requestID,
-		Usage:        usage,
-		Model:        originalModel,
-		BillingModel: mappedModel,
-		Stream:       false,
-		Duration:     time.Since(startTime),
+		RequestID:     requestID,
+		Usage:         usage,
+		Model:         originalModel,
+		BillingModel:  billingModel,
+		UpstreamModel: upstreamModel,
+		Stream:        false,
+		Duration:      time.Since(startTime),
 	}, nil
 }
 
@@ -269,7 +291,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
 	originalModel string,
-	mappedModel string,
+	billingModel string,
+	upstreamModel string,
 	includeUsage bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
@@ -301,13 +324,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:    requestID,
-			Usage:        usage,
-			Model:        originalModel,
-			BillingModel: mappedModel,
-			Stream:       true,
-			Duration:     time.Since(startTime),
-			FirstTokenMs: firstTokenMs,
+			RequestID:     requestID,
+			Usage:         usage,
+			Model:         originalModel,
+			BillingModel:  billingModel,
+			UpstreamModel: upstreamModel,
+			Stream:        true,
+			Duration:      time.Since(startTime),
+			FirstTokenMs:  firstTokenMs,
 		}
 	}
 

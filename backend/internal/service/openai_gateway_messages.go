@@ -40,6 +40,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, fmt.Errorf("parse anthropic request: %w", err)
 	}
 	originalModel := anthropicReq.Model
+	applyOpenAICompatModelNormalization(&anthropicReq)
+	normalizedModel := anthropicReq.Model
 	clientStream := anthropicReq.Stream // client's original stream preference
 
 	// 2. Convert Anthropic → Responses
@@ -59,13 +61,16 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 3. Model mapping
-	mappedModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
-	responsesReq.Model = mappedModel
+	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
+	upstreamModel := normalizeCodexModel(billingModel)
+	responsesReq.Model = upstreamModel
 
 	logger.L().Debug("openai messages: model mapping applied",
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),
-		zap.String("mapped_model", mappedModel),
+		zap.String("normalized_model", normalizedModel),
+		zap.String("billing_model", billingModel),
+		zap.String("upstream_model", upstreamModel),
 		zap.Bool("stream", isStream),
 	)
 
@@ -81,6 +86,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
 		}
 		codexResult := applyCodexOAuthTransform(reqBody, false, false)
+		if codexResult.NormalizedModel != "" {
+			upstreamModel = codexResult.NormalizedModel
+		}
 		if codexResult.PromptCacheKey != "" {
 			promptCacheKey = codexResult.PromptCacheKey
 		} else if promptCacheKey != "" {
@@ -107,10 +115,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	// Override session_id with a deterministic UUID derived from the sticky
-	// session key (buildUpstreamRequest may have set it to the raw value).
+	// Override session_id with a deterministic UUID derived from the isolated
+	// session key, ensuring different API keys produce different upstream sessions.
 	if promptCacheKey != "" {
-		upstreamReq.Header.Set("session_id", generateSessionUUID(promptCacheKey))
+		apiKeyID := getAPIKeyIDFromContext(c)
+		upstreamReq.Header.Set("session_id", generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey)))
 	}
 
 	// 7. Send request
@@ -156,10 +165,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, startTime)
 	} else {
 		// Client wants JSON: buffer the streaming response and assemble a JSON reply.
-		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -204,7 +213,8 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
 	originalModel string,
-	mappedModel string,
+	billingModel string,
+	upstreamModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -274,12 +284,13 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	c.JSON(http.StatusOK, anthropicResp)
 
 	return &OpenAIForwardResult{
-		RequestID:    requestID,
-		Usage:        usage,
-		Model:        originalModel,
-		BillingModel: mappedModel,
-		Stream:       false,
-		Duration:     time.Since(startTime),
+		RequestID:     requestID,
+		Usage:         usage,
+		Model:         originalModel,
+		BillingModel:  billingModel,
+		UpstreamModel: upstreamModel,
+		Stream:        false,
+		Duration:      time.Since(startTime),
 	}, nil
 }
 
@@ -292,7 +303,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
 	originalModel string,
-	mappedModel string,
+	billingModel string,
+	upstreamModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -322,13 +334,14 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	// resultWithUsage builds the final result snapshot.
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:    requestID,
-			Usage:        usage,
-			Model:        originalModel,
-			BillingModel: mappedModel,
-			Stream:       true,
-			Duration:     time.Since(startTime),
-			FirstTokenMs: firstTokenMs,
+			RequestID:     requestID,
+			Usage:         usage,
+			Model:         originalModel,
+			BillingModel:  billingModel,
+			UpstreamModel: upstreamModel,
+			Stream:        true,
+			Duration:      time.Since(startTime),
+			FirstTokenMs:  firstTokenMs,
 		}
 	}
 

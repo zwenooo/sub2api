@@ -158,12 +158,51 @@
             </span>
           </template>
 
-          <template #cell-account_count="{ value }">
-            <span
-              class="inline-flex items-center rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300"
-            >
-              {{ t('admin.groups.accountsCount', { count: value || 0 }) }}
-            </span>
+          <template #cell-account_count="{ row }">
+            <div class="space-y-0.5 text-xs">
+              <div>
+                <span class="text-gray-500 dark:text-gray-400">{{ t('admin.groups.accountsAvailable') }}</span>
+                <span class="ml-1 font-medium text-emerald-600 dark:text-emerald-400">{{ (row.active_account_count || 0) - (row.rate_limited_account_count || 0) }}</span>
+                <span class="ml-1 inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300">{{ t('admin.groups.accountsUnit') }}</span>
+              </div>
+              <div v-if="row.rate_limited_account_count">
+                <span class="text-gray-500 dark:text-gray-400">{{ t('admin.groups.accountsRateLimited') }}</span>
+                <span class="ml-1 font-medium text-amber-600 dark:text-amber-400">{{ row.rate_limited_account_count }}</span>
+                <span class="ml-1 inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300">{{ t('admin.groups.accountsUnit') }}</span>
+              </div>
+              <div>
+                <span class="text-gray-500 dark:text-gray-400">{{ t('admin.groups.accountsTotal') }}</span>
+                <span class="ml-1 font-medium text-gray-700 dark:text-gray-300">{{ row.account_count || 0 }}</span>
+                <span class="ml-1 inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300">{{ t('admin.groups.accountsUnit') }}</span>
+              </div>
+            </div>
+          </template>
+
+          <template #cell-capacity="{ row }">
+            <GroupCapacityBadge
+              v-if="capacityMap.get(row.id)"
+              :concurrency-used="capacityMap.get(row.id)!.concurrencyUsed"
+              :concurrency-max="capacityMap.get(row.id)!.concurrencyMax"
+              :sessions-used="capacityMap.get(row.id)!.sessionsUsed"
+              :sessions-max="capacityMap.get(row.id)!.sessionsMax"
+              :rpm-used="capacityMap.get(row.id)!.rpmUsed"
+              :rpm-max="capacityMap.get(row.id)!.rpmMax"
+            />
+            <span v-else class="text-xs text-gray-400">—</span>
+          </template>
+
+          <template #cell-usage="{ row }">
+            <div v-if="usageLoading" class="text-xs text-gray-400">—</div>
+            <div v-else class="space-y-0.5 text-xs">
+              <div class="text-gray-500 dark:text-gray-400">
+                <span class="text-gray-400 dark:text-gray-500">{{ t('admin.groups.usageToday') }}</span>
+                <span class="ml-1 font-medium text-gray-700 dark:text-gray-300">${{ formatCost(usageMap.get(row.id)?.today_cost ?? 0) }}</span>
+              </div>
+              <div class="text-gray-500 dark:text-gray-400">
+                <span class="text-gray-400 dark:text-gray-500">{{ t('admin.groups.usageTotal') }}</span>
+                <span class="ml-1 font-medium text-gray-700 dark:text-gray-300">${{ formatCost(usageMap.get(row.id)?.total_cost ?? 0) }}</span>
+              </div>
+            </div>
           </template>
 
           <template #cell-status="{ value }">
@@ -750,6 +789,61 @@
               class="input"
             />
             <p class="input-hint">{{ t('admin.groups.openaiMessages.defaultModelHint') }}</p>
+          </div>
+        </div>
+
+        <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
+        <div v-if="['openai', 'antigravity', 'anthropic', 'gemini'].includes(createForm.platform)" class="border-t border-gray-200 dark:border-dark-400 pt-4 mt-4 space-y-4">
+          <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">账号过滤控制</h4>
+
+          <!-- require_oauth_only toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-600 dark:text-gray-400">仅允许 OAuth 账号</label>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {{ createForm.require_oauth_only ? '已启用 — 排除 API Key 类型账号' : '未启用' }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="createForm.require_oauth_only = !createForm.require_oauth_only"
+              class="relative inline-flex h-6 w-12 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+              :class="
+                createForm.require_oauth_only ? 'bg-primary-500' : 'bg-gray-300 dark:bg-dark-600'
+              "
+            >
+              <span
+                class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                :class="
+                  createForm.require_oauth_only ? 'translate-x-6' : 'translate-x-1'
+                "
+              />
+            </button>
+          </div>
+
+          <!-- require_privacy_set toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-600 dark:text-gray-400">仅允许隐私保护已设置的账号</label>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {{ createForm.require_privacy_set ? '已启用 — Privacy 未设置的账号将被排除' : '未启用' }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="createForm.require_privacy_set = !createForm.require_privacy_set"
+              class="relative inline-flex h-6 w-12 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+              :class="
+                createForm.require_privacy_set ? 'bg-primary-500' : 'bg-gray-300 dark:bg-dark-600'
+              "
+            >
+              <span
+                class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                :class="
+                  createForm.require_privacy_set ? 'translate-x-6' : 'translate-x-1'
+                "
+              />
+            </button>
           </div>
         </div>
 
@@ -1488,6 +1582,61 @@
           </div>
         </div>
 
+        <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
+        <div v-if="['openai', 'antigravity', 'anthropic', 'gemini'].includes(editForm.platform)" class="border-t border-gray-200 dark:border-dark-400 pt-4 mt-4 space-y-4">
+          <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">账号过滤控制</h4>
+
+          <!-- require_oauth_only toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-600 dark:text-gray-400">仅允许 OAuth 账号</label>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {{ editForm.require_oauth_only ? '已启用 — 排除 API Key 类型账号' : '未启用' }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="editForm.require_oauth_only = !editForm.require_oauth_only"
+              class="relative inline-flex h-6 w-12 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+              :class="
+                editForm.require_oauth_only ? 'bg-primary-500' : 'bg-gray-300 dark:bg-dark-600'
+              "
+            >
+              <span
+                class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                :class="
+                  editForm.require_oauth_only ? 'translate-x-6' : 'translate-x-1'
+                "
+              />
+            </button>
+          </div>
+
+          <!-- require_privacy_set toggle -->
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm text-gray-600 dark:text-gray-400">仅允许隐私保护已设置的账号</label>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {{ editForm.require_privacy_set ? '已启用 — Privacy 未设置的账号将被排除' : '未启用' }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="editForm.require_privacy_set = !editForm.require_privacy_set"
+              class="relative inline-flex h-6 w-12 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+              :class="
+                editForm.require_privacy_set ? 'bg-primary-500' : 'bg-gray-300 dark:bg-dark-600'
+              "
+            >
+              <span
+                class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                :class="
+                  editForm.require_privacy_set ? 'translate-x-6' : 'translate-x-1'
+                "
+              />
+            </button>
+          </div>
+        </div>
+
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
         <div
           v-if="['anthropic', 'antigravity'].includes(editForm.platform) && editForm.subscription_type !== 'subscription'"
@@ -1812,9 +1961,11 @@ import Select from '@/components/common/Select.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import GroupRateMultipliersModal from '@/components/admin/group/GroupRateMultipliersModal.vue'
+import GroupCapacityBadge from '@/components/common/GroupCapacityBadge.vue'
 import { VueDraggable } from 'vue-draggable-plus'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { useKeyedDebouncedSearch } from '@/composables/useKeyedDebouncedSearch'
+import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -1827,6 +1978,8 @@ const columns = computed<Column[]>(() => [
   { key: 'rate_multiplier', label: t('admin.groups.columns.rateMultiplier'), sortable: true },
   { key: 'is_exclusive', label: t('admin.groups.columns.type'), sortable: true },
   { key: 'account_count', label: t('admin.groups.columns.accounts'), sortable: true },
+  { key: 'capacity', label: t('admin.groups.columns.capacity'), sortable: false },
+  { key: 'usage', label: t('admin.groups.columns.usage'), sortable: false },
   { key: 'status', label: t('admin.groups.columns.status'), sortable: true },
   { key: 'actions', label: t('admin.groups.columns.actions'), sortable: false }
 ])
@@ -1963,6 +2116,9 @@ const copyAccountsGroupOptionsForEdit = computed(() => {
 
 const groups = ref<AdminGroup[]>([])
 const loading = ref(false)
+const usageMap = ref<Map<number, { today_cost: number; total_cost: number }>>(new Map())
+const usageLoading = ref(false)
+const capacityMap = ref<Map<number, { concurrencyUsed: number; concurrencyMax: number; sessionsUsed: number; sessionsMax: number; rpmUsed: number; rpmMax: number }>>(new Map())
 const searchQuery = ref('')
 const filters = reactive({
   platform: '',
@@ -1971,7 +2127,7 @@ const filters = reactive({
 })
 const pagination = reactive({
   page: 1,
-  page_size: 20,
+  page_size: getPersistedPageSize(),
   total: 0,
   pages: 0
 })
@@ -2017,6 +2173,9 @@ const createForm = reactive({
   // OpenAI Messages 调度配置（仅 openai 平台使用）
   allow_messages_dispatch: false,
   default_mapped_model: 'gpt-5.4',
+  // 账号过滤控制（OpenAI/Antigravity 平台）
+  require_oauth_only: false,
+  require_privacy_set: false,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -2261,6 +2420,9 @@ const editForm = reactive({
   // OpenAI Messages 调度配置（仅 openai 平台使用）
   allow_messages_dispatch: false,
   default_mapped_model: '',
+  // 账号过滤控制（OpenAI/Antigravity 平台）
+  require_oauth_only: false,
+  require_privacy_set: false,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -2301,6 +2463,8 @@ const loadGroups = async () => {
     groups.value = response.items
     pagination.total = response.total
     pagination.pages = response.pages
+    loadUsageSummary()
+    loadCapacitySummary()
   } catch (error: any) {
     if (signal.aborted || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') {
       return
@@ -2311,6 +2475,49 @@ const loadGroups = async () => {
     if (abortController === currentController && !signal.aborted) {
       loading.value = false
     }
+  }
+}
+
+const formatCost = (cost: number): string => {
+  if (cost >= 1000) return cost.toFixed(0)
+  if (cost >= 100) return cost.toFixed(1)
+  return cost.toFixed(2)
+}
+
+const loadUsageSummary = async () => {
+  usageLoading.value = true
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    const data = await adminAPI.groups.getUsageSummary(tz)
+    const map = new Map<number, { today_cost: number; total_cost: number }>()
+    for (const item of data) {
+      map.set(item.group_id, { today_cost: item.today_cost, total_cost: item.total_cost })
+    }
+    usageMap.value = map
+  } catch (error) {
+    console.error('Error loading group usage summary:', error)
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+const loadCapacitySummary = async () => {
+  try {
+    const data = await adminAPI.groups.getCapacitySummary()
+    const map = new Map<number, { concurrencyUsed: number; concurrencyMax: number; sessionsUsed: number; sessionsMax: number; rpmUsed: number; rpmMax: number }>()
+    for (const item of data) {
+      map.set(item.group_id, {
+        concurrencyUsed: item.concurrency_used,
+        concurrencyMax: item.concurrency_max,
+        sessionsUsed: item.sessions_used,
+        sessionsMax: item.sessions_max,
+        rpmUsed: item.rpm_used,
+        rpmMax: item.rpm_max
+      })
+    }
+    capacityMap.value = map
+  } catch (error) {
+    console.error('Error loading group capacity summary:', error)
   }
 }
 
@@ -2361,6 +2568,8 @@ const closeCreateModal = () => {
   createForm.fallback_group_id = null
   createForm.fallback_group_id_on_invalid_request = null
   createForm.allow_messages_dispatch = false
+  createForm.require_oauth_only = false
+  createForm.require_privacy_set = false
   createForm.default_mapped_model = 'gpt-5.4'
   createForm.supported_model_scopes = ['claude', 'gemini_text', 'gemini_image']
   createForm.mcp_xml_inject = true
@@ -2448,6 +2657,8 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.fallback_group_id = group.fallback_group_id
   editForm.fallback_group_id_on_invalid_request = group.fallback_group_id_on_invalid_request
   editForm.allow_messages_dispatch = group.allow_messages_dispatch || false
+  editForm.require_oauth_only = group.require_oauth_only ?? false
+  editForm.require_privacy_set = group.require_privacy_set ?? false
   editForm.default_mapped_model = group.default_mapped_model || ''
   editForm.model_routing_enabled = group.model_routing_enabled || false
   editForm.supported_model_scopes = group.supported_model_scopes || ['claude', 'gemini_text', 'gemini_image']
@@ -2555,6 +2766,10 @@ watch(
     if (newVal !== 'openai') {
       createForm.allow_messages_dispatch = false
       createForm.default_mapped_model = ''
+    }
+    if (!['openai', 'antigravity', 'anthropic', 'gemini'].includes(newVal)) {
+      createForm.require_oauth_only = false
+      createForm.require_privacy_set = false
     }
   }
 )

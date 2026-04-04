@@ -102,6 +102,10 @@ type Group struct {
 	// OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
 	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
 
+	// 账号过滤控制（仅 OpenAI/Antigravity 平台有效）
+	RequireOAuthOnly  bool `json:"require_oauth_only"`
+	RequirePrivacySet bool `json:"require_privacy_set"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -122,9 +126,11 @@ type AdminGroup struct {
 	DefaultMappedModel string `json:"default_mapped_model"`
 
 	// 支持的模型系列（仅 antigravity 平台使用）
-	SupportedModelScopes []string       `json:"supported_model_scopes"`
-	AccountGroups        []AccountGroup `json:"account_groups,omitempty"`
-	AccountCount         int64          `json:"account_count,omitempty"`
+	SupportedModelScopes    []string       `json:"supported_model_scopes"`
+	AccountGroups           []AccountGroup `json:"account_groups,omitempty"`
+	AccountCount            int64          `json:"account_count,omitempty"`
+	ActiveAccountCount      int64          `json:"active_account_count,omitempty"`
+	RateLimitedAccountCount int64          `json:"rate_limited_account_count,omitempty"`
 
 	// 分组排序
 	SortOrder int `json:"sort_order"`
@@ -183,7 +189,8 @@ type Account struct {
 
 	// TLS指纹伪装（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 从 extra 字段提取，方便前端显示和编辑
-	EnableTLSFingerprint *bool `json:"enable_tls_fingerprint,omitempty"`
+	EnableTLSFingerprint    *bool  `json:"enable_tls_fingerprint,omitempty"`
+	TLSFingerprintProfileID *int64 `json:"tls_fingerprint_profile_id,omitempty"`
 
 	// 会话ID伪装（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 启用后将在15分钟内固定 metadata.user_id 中的 session ID
@@ -194,6 +201,10 @@ type Account struct {
 	// 启用后将所有 cache creation tokens 归入指定的 TTL 类型计费
 	CacheTTLOverrideEnabled *bool   `json:"cache_ttl_override_enabled,omitempty"`
 	CacheTTLOverrideTarget  *string `json:"cache_ttl_override_target,omitempty"`
+
+	// 自定义 Base URL 中继转发（仅 Anthropic OAuth/SetupToken 账号有效）
+	CustomBaseURLEnabled *bool   `json:"custom_base_url_enabled,omitempty"`
+	CustomBaseURL        *string `json:"custom_base_url,omitempty"`
 
 	// API Key 账号配额限制
 	QuotaLimit       *float64 `json:"quota_limit,omitempty"`
@@ -384,6 +395,9 @@ type UsageLog struct {
 	// Cache TTL Override 标记
 	CacheTTLOverridden bool `json:"cache_ttl_overridden"`
 
+	// BillingMode 计费模式：token/image
+	BillingMode *string `json:"billing_mode,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 
 	User         *User             `json:"user,omitempty"`
@@ -395,6 +409,17 @@ type UsageLog struct {
 // AdminUsageLog 是管理员接口使用的 usage log DTO（包含管理员字段）。
 type AdminUsageLog struct {
 	UsageLog
+
+	// UpstreamModel is the actual model sent to the upstream provider after mapping.
+	// Omitted when no mapping was applied (requested model was used as-is).
+	UpstreamModel *string `json:"upstream_model,omitempty"`
+
+	// ChannelID 渠道 ID
+	ChannelID *int64 `json:"channel_id,omitempty"`
+	// ModelMappingChain 模型映射链，如 "a→b→c"
+	ModelMappingChain *string `json:"model_mapping_chain,omitempty"`
+	// BillingTier 计费层级标签（per_request/image 模式）
+	BillingTier *string `json:"billing_tier,omitempty"`
 
 	// AccountRateMultiplier 账号计费倍率快照（nil 表示按 1.0 处理）
 	AccountRateMultiplier *float64 `json:"account_rate_multiplier"`

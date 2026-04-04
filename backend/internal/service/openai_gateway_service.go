@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -203,6 +205,7 @@ type OpenAIUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
 }
 
 // OpenAIForwardResult represents the result of forwarding
@@ -215,6 +218,9 @@ type OpenAIForwardResult struct {
 	// This is set by the Anthropic Messages conversion path where
 	// the mapped upstream model differs from the client-facing model.
 	BillingModel string
+	// UpstreamModel is the actual model sent to the upstream provider after mapping.
+	// Empty when no mapping was applied (requested model was used as-is).
+	UpstreamModel string
 	// ServiceTier records the OpenAI Responses API service tier, e.g. "priority" / "flex".
 	// Nil means the request did not specify a recognized tier.
 	ServiceTier *string
@@ -319,6 +325,8 @@ type OpenAIGatewayService struct {
 	openAITokenProvider   *OpenAITokenProvider
 	toolCorrector         *CodexToolCorrector
 	openaiWSResolver      OpenAIWSProtocolResolver
+	resolver              *ModelPricingResolver
+	channelService        *ChannelService
 
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
@@ -355,6 +363,8 @@ func NewOpenAIGatewayService(
 	deferredService *DeferredService,
 	accountRuleService *AccountRuleService,
 	openAITokenProvider *OpenAITokenProvider,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -383,11 +393,81 @@ func NewOpenAIGatewayService(
 		openAITokenProvider:   openAITokenProvider,
 		toolCorrector:         NewCodexToolCorrector(),
 		openaiWSResolver:      NewOpenAIWSProtocolResolver(cfg),
+		resolver:              resolver,
+		channelService:        channelService,
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+// ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）
+func (s *OpenAIGatewayService) ResolveChannelMapping(ctx context.Context, groupID int64, model string) ChannelMappingResult {
+	if s.channelService == nil {
+		return ChannelMappingResult{MappedModel: model}
+	}
+	return s.channelService.ResolveChannelMapping(ctx, groupID, model)
+}
+
+// IsModelRestricted 检查模型是否被渠道限制（代理到 ChannelService）
+func (s *OpenAIGatewayService) IsModelRestricted(ctx context.Context, groupID int64, model string) bool {
+	if s.channelService == nil {
+		return false
+	}
+	return s.channelService.IsModelRestricted(ctx, groupID, model)
+}
+
+// ResolveChannelMappingAndRestrict 解析渠道映射。
+// 模型限制检查已移至调度阶段，restricted 始终返回 false。
+func (s *OpenAIGatewayService) ResolveChannelMappingAndRestrict(ctx context.Context, groupID *int64, model string) (ChannelMappingResult, bool) {
+	if s.channelService == nil {
+		return ChannelMappingResult{MappedModel: model}, false
+	}
+	return s.channelService.ResolveChannelMappingAndRestrict(ctx, groupID, model)
+}
+
+func (s *OpenAIGatewayService) checkChannelPricingRestriction(ctx context.Context, groupID *int64, requestedModel string) bool {
+	if groupID == nil || s.channelService == nil || requestedModel == "" {
+		return false
+	}
+	mapping := s.channelService.ResolveChannelMapping(ctx, *groupID, requestedModel)
+	billingModel := billingModelForRestriction(mapping.BillingModelSource, requestedModel, mapping.MappedModel)
+	if billingModel == "" {
+		return false
+	}
+	return s.channelService.IsModelRestricted(ctx, *groupID, billingModel)
+}
+
+func (s *OpenAIGatewayService) isUpstreamModelRestrictedByChannel(ctx context.Context, groupID int64, account *Account, requestedModel string) bool {
+	if s.channelService == nil {
+		return false
+	}
+	upstreamModel := resolveOpenAIForwardModel(account, requestedModel, "")
+	if upstreamModel == "" {
+		return false
+	}
+	return s.channelService.IsModelRestricted(ctx, groupID, upstreamModel)
+}
+
+func (s *OpenAIGatewayService) needsUpstreamChannelRestrictionCheck(ctx context.Context, groupID *int64) bool {
+	if groupID == nil || s.channelService == nil {
+		return false
+	}
+	ch, err := s.channelService.GetChannelForGroup(ctx, *groupID)
+	if err != nil {
+		slog.Warn("failed to check openai channel upstream restriction", "group_id", *groupID, "error", err)
+		return false
+	}
+	if ch == nil || !ch.RestrictModels {
+		return false
+	}
+	return ch.BillingModelSource == BillingModelSourceUpstream
+}
+
+// ReplaceModelInBody 替换请求体中的 JSON model 字段（通用 gjson/sjson 实现）。
+func (s *OpenAIGatewayService) ReplaceModelInBody(body []byte, newModel string) []byte {
+	return ReplaceModelInBody(body, newModel)
 }
 
 func (s *OpenAIGatewayService) getCodexSnapshotThrottle() *accountWriteThrottle {
@@ -790,6 +870,20 @@ func getAPIKeyIDFromContext(c *gin.Context) int64 {
 	return apiKey.ID
 }
 
+// isolateOpenAISessionID 将 apiKeyID 混入 session 标识符，
+// 确保不同 API Key 的用户即使使用相同的原始 session_id/conversation_id，
+// 到达上游的标识符也不同，防止跨用户会话碰撞。
+func isolateOpenAISessionID(apiKeyID int64, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	h := xxhash.New()
+	_, _ = fmt.Fprintf(h, "k%d:", apiKeyID)
+	_, _ = h.WriteString(raw)
+	return fmt.Sprintf("%016x", h.Sum64())
+}
+
 func logCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, account *Account, apiKeyID int64, result CodexClientRestrictionDetectionResult, body []byte) {
 	if !result.Enabled {
 		return
@@ -1110,6 +1204,13 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 }
 
 func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, stickyAccountID int64) (*Account, error) {
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+		slog.Warn("channel pricing restriction blocked request",
+			"group_id", derefGroupID(groupID),
+			"model", requestedModel)
+		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
+	}
+
 	// 1. 尝试粘性会话命中
 	// Try sticky session hit
 	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, requestedModel, excludedIDs, stickyAccountID); account != nil {
@@ -1125,7 +1226,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 3. 按优先级 + LRU 选择最佳账号
 	// Select by priority + LRU
-	selected := s.selectBestAccount(ctx, accounts, requestedModel, excludedIDs)
+	selected := s.selectBestAccount(ctx, groupID, accounts, requestedModel, excludedIDs)
 
 	if selected == nil {
 		if requestedModel != "" {
@@ -1187,6 +1288,16 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if requestedModel != "" && !s.isModelSupportedByAccount(account, requestedModel) {
 		return nil
 	}
+	account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel)
+	if account == nil {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
+	if groupID != nil && s.needsUpstreamChannelRestrictionCheck(ctx, groupID) &&
+		s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel) {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
@@ -1199,8 +1310,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 //
 // selectBestAccount selects the best account from candidates (priority + LRU).
 // Returns nil if no available account.
-func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}) *Account {
+func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}) *Account {
 	var selected *Account
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 
 	for i := range accounts {
 		acc := &accounts[i]
@@ -1213,6 +1325,13 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, accounts [
 
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel)
 		if fresh == nil {
+			continue
+		}
+		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel)
+		if fresh == nil {
+			continue
+		}
+		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
 			continue
 		}
 
@@ -1266,7 +1385,15 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
 func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+		slog.Warn("channel pricing restriction blocked request",
+			"group_id", derefGroupID(groupID),
+			"model", requestedModel)
+		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
+	}
+
 	cfg := s.schedulingConfig()
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil {
@@ -1341,27 +1468,34 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 				}
 				if !clearSticky && account.IsSchedulable() && account.IsOpenAI() &&
 					(requestedModel == "" || s.isModelSupportedByAccount(account, requestedModel)) {
-					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
-					if err == nil && result.Acquired {
-						_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
-						return &AccountSelectionResult{
-							Account:     account,
-							Acquired:    true,
-							ReleaseFunc: result.ReleaseFunc,
-						}, nil
-					}
+					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel)
+					if account == nil {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					} else if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel) {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					} else {
+						result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
+						if err == nil && result.Acquired {
+							_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
+							return &AccountSelectionResult{
+								Account:     account,
+								Acquired:    true,
+								ReleaseFunc: result.ReleaseFunc,
+							}, nil
+						}
 
-					waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-					if waitingCount < cfg.StickySessionMaxWaiting {
-						return &AccountSelectionResult{
-							Account: account,
-							WaitPlan: &AccountWaitPlan{
-								AccountID:      accountID,
-								MaxConcurrency: account.Concurrency,
-								Timeout:        cfg.StickySessionWaitTimeout,
-								MaxWaiting:     cfg.StickySessionMaxWaiting,
-							},
-						}, nil
+						waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
+						if waitingCount < cfg.StickySessionMaxWaiting {
+							return &AccountSelectionResult{
+								Account: account,
+								WaitPlan: &AccountWaitPlan{
+									AccountID:      accountID,
+									MaxConcurrency: account.Concurrency,
+									Timeout:        cfg.StickySessionWaitTimeout,
+									MaxWaiting:     cfg.StickySessionMaxWaiting,
+								},
+							}, nil
+						}
 					}
 				}
 			}
@@ -1382,6 +1516,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			continue
 		}
 		if requestedModel != "" && !s.isModelSupportedByAccount(acc, requestedModel) {
+			continue
+		}
+		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
 			continue
 		}
 		candidates = append(candidates, acc)
@@ -1406,6 +1543,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel)
 			if fresh == nil {
+				continue
+			}
+			if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
 				continue
 			}
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
@@ -1462,6 +1602,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 				if fresh == nil {
 					continue
 				}
+				if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
+					continue
+				}
 				result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 				if err == nil && result.Acquired {
 					if sessionHash != "" {
@@ -1482,6 +1625,9 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel)
 		if fresh == nil {
+			continue
+		}
+		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
 			continue
 		}
 		return &AccountSelectionResult{
@@ -1558,6 +1704,28 @@ func (s *OpenAIGatewayService) isModelSupportedByAccount(account *Account, reque
 		}
 	}
 	return account.IsModelSupported(requestedModel)
+}
+
+func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Context, account *Account, requestedModel string) *Account {
+	if account == nil {
+		return nil
+	}
+	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+		return account
+	}
+
+	latest, err := s.accountRepo.GetByID(ctx, account.ID)
+	if err != nil || latest == nil {
+		return nil
+	}
+	syncOpenAICodexRateLimitFromExtra(ctx, s.accountRepo, latest, time.Now())
+	if !latest.IsSchedulable() || !latest.IsOpenAI() {
+		return nil
+	}
+	if requestedModel != "" && !s.isModelSupportedByAccount(latest, requestedModel) {
+		return nil
+	}
+	return latest
 }
 
 func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
@@ -1904,29 +2072,29 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
-	mappedModel := account.GetMappedModel(reqModel)
-	if mappedModel != reqModel {
-		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", reqModel, mappedModel, account.Name, isCodexCLI)
-		reqBody["model"] = mappedModel
+	billingModel := account.GetMappedModel(reqModel)
+	if billingModel != reqModel {
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", reqModel, billingModel, account.Name, isCodexCLI)
+		reqBody["model"] = billingModel
 		bodyModified = true
-		markPatchSet("model", mappedModel)
+		markPatchSet("model", billingModel)
 	}
+	upstreamModel := billingModel
 
 	// 针对所有 OpenAI 账号执行 Codex 模型名规范化，确保上游识别一致。
 	if model, ok := reqBody["model"].(string); ok {
-		normalizedModel := normalizeCodexModel(model)
-		if normalizedModel != "" && normalizedModel != model {
-			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Codex model normalization: %s -> %s (account: %s, type: %s, isCodexCLI: %v)",
-				model, normalizedModel, account.Name, account.Type, isCodexCLI)
-			reqBody["model"] = normalizedModel
-			mappedModel = normalizedModel
+		upstreamModel = normalizeCodexModel(model)
+		if upstreamModel != "" && upstreamModel != model {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Upstream model resolved: %s -> %s (account: %s, type: %s, isCodexCLI: %v)",
+				model, upstreamModel, account.Name, account.Type, isCodexCLI)
+			reqBody["model"] = upstreamModel
 			bodyModified = true
-			markPatchSet("model", normalizedModel)
+			markPatchSet("model", upstreamModel)
 		}
 
 		// 移除 gpt-5.2-codex 以下的版本 verbosity 参数
 		// 确保高版本模型向低版本模型映射不报错
-		if !SupportsVerbosity(normalizedModel) {
+		if !SupportsVerbosity(upstreamModel) {
 			if text, ok := reqBody["text"].(map[string]any); ok {
 				delete(text, "verbosity")
 			}
@@ -1950,7 +2118,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			disablePatch()
 		}
 		if codexResult.NormalizedModel != "" {
-			mappedModel = codexResult.NormalizedModel
+			upstreamModel = codexResult.NormalizedModel
 		}
 		if codexResult.PromptCacheKey != "" {
 			promptCacheKey = codexResult.PromptCacheKey
@@ -2067,7 +2235,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			"forward_start account_id=%d account_type=%s model=%s stream=%v has_previous_response_id=%v",
 			account.ID,
 			account.Type,
-			mappedModel,
+			upstreamModel,
 			reqStream,
 			hasPreviousResponseID,
 		)
@@ -2156,7 +2324,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				isCodexCLI,
 				reqStream,
 				originalModel,
-				mappedModel,
+				upstreamModel,
 				startTime,
 				attempt,
 				wsLastFailureReason,
@@ -2257,6 +2425,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				firstTokenMs,
 				wsAttempts,
 			)
+			wsResult.UpstreamModel = upstreamModel
 			return wsResult, nil
 		}
 		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
@@ -2380,14 +2549,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		var usage *OpenAIUsage
 		var firstTokenMs *int
 		if reqStream {
-			streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, mappedModel)
+			streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, upstreamModel)
 			if err != nil {
 				return nil, err
 			}
 			usage = streamResult.usage
 			firstTokenMs = streamResult.firstTokenMs
 		} else {
-			usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, mappedModel)
+			usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
 			if err != nil {
 				return nil, err
 			}
@@ -2411,6 +2580,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			RequestID:       resp.Header.Get("x-request-id"),
 			Usage:           *usage,
 			Model:           originalModel,
+			UpstreamModel:   upstreamModel,
 			ServiceTier:     serviceTier,
 			ReasoningEffort: reasoningEffort,
 			Stream:          reqStream,
@@ -2713,13 +2883,17 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
+		apiKeyID := getAPIKeyIDFromContext(c)
+		// 先保存客户端原始值，再做 compact 补充，避免后续统一隔离时读到已处理的值。
+		clientSessionID := strings.TrimSpace(req.Header.Get("session_id"))
+		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
 		if isOpenAIResponsesCompactPath(c) {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
 			}
-			if req.Header.Get("session_id") == "" {
-				req.Header.Set("session_id", resolveOpenAICompactSessionID(c))
+			if clientSessionID == "" {
+				clientSessionID = resolveOpenAICompactSessionID(c)
 			}
 		} else if req.Header.Get("accept") == "" {
 			req.Header.Set("accept", "text/event-stream")
@@ -2730,13 +2904,18 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if req.Header.Get("originator") == "" {
 			req.Header.Set("originator", "codex_cli_rs")
 		}
-		if promptCacheKey != "" {
-			if req.Header.Get("conversation_id") == "" {
-				req.Header.Set("conversation_id", promptCacheKey)
-			}
-			if req.Header.Get("session_id") == "" {
-				req.Header.Set("session_id", promptCacheKey)
-			}
+		// 用隔离后的 session 标识符覆盖客户端透传值，防止跨用户会话碰撞。
+		if clientSessionID == "" {
+			clientSessionID = promptCacheKey
+		}
+		if clientConversationID == "" {
+			clientConversationID = promptCacheKey
+		}
+		if clientSessionID != "" {
+			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, clientSessionID))
+		}
+		if clientConversationID != "" {
+			req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, clientConversationID))
 		}
 	}
 
@@ -2781,6 +2960,12 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
+	if s.rateLimitService != nil {
+		// Passthrough mode preserves the raw upstream error response, but runtime
+		// account state still needs to be updated so sticky routing can stop
+		// reusing a freshly rate-limited account.
+		_ = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:             account.Platform,
 		AccountID:            account.ID,
@@ -3099,22 +3284,27 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		}
 	}
 	if account.Type == AccountTypeOAuth {
+		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
+		req.Header.Del("conversation_id")
+		req.Header.Del("session_id")
+
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+		apiKeyID := getAPIKeyIDFromContext(c)
 		if isOpenAIResponsesCompactPath(c) {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
 			}
-			if req.Header.Get("session_id") == "" {
-				req.Header.Set("session_id", resolveOpenAICompactSessionID(c))
-			}
+			compactSession := resolveOpenAICompactSessionID(c)
+			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, compactSession))
 		} else {
 			req.Header.Set("accept", "text/event-stream")
 		}
 		if promptCacheKey != "" {
-			req.Header.Set("conversation_id", promptCacheKey)
-			req.Header.Set("session_id", promptCacheKey)
+			isolated := isolateOpenAISessionID(apiKeyID, promptCacheKey)
+			req.Header.Set("conversation_id", isolated)
+			req.Header.Set("session_id", isolated)
 		}
 	}
 
@@ -4355,6 +4545,7 @@ type OpenAIRecordUsageInput struct {
 	IPAddress          string // 请求的客户端 IP 地址
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
+	ChannelUsageFields
 }
 
 // RecordUsage records usage and deducts balance
@@ -4385,10 +4576,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		OutputTokens:        result.Usage.OutputTokens,
 		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
 		CacheReadTokens:     result.Usage.CacheReadInputTokens,
+		ImageOutputTokens:   result.Usage.ImageOutputTokens,
 	}
 
 	// Get rate multiplier
-	multiplier := s.cfg.Default.RateMultiplier
+	multiplier := 1.0
+	if s.cfg != nil {
+		multiplier = s.cfg.Default.RateMultiplier
+	}
 	if apiKey.GroupID != nil && apiKey.Group != nil {
 		resolver := s.userGroupRateResolver
 		if resolver == nil {
@@ -4397,15 +4592,37 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		multiplier = resolver.Resolve(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
 	}
 
-	billingModel := result.Model
+	var cost *CostBreakdown
+	var err error
+	billingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
 	if result.BillingModel != "" {
-		billingModel = result.BillingModel
+		billingModel = strings.TrimSpace(result.BillingModel)
+	}
+	if input.BillingModelSource == BillingModelSourceChannelMapped && input.ChannelMappedModel != "" {
+		billingModel = input.ChannelMappedModel
+	}
+	if input.BillingModelSource == BillingModelSourceRequested && input.OriginalModel != "" {
+		billingModel = input.OriginalModel
 	}
 	serviceTier := ""
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)
 	}
-	cost, err := s.billingService.CalculateCostWithServiceTier(billingModel, tokens, multiplier, serviceTier)
+	if s.resolver != nil && apiKey.Group != nil {
+		gid := apiKey.Group.ID
+		cost, err = s.billingService.CalculateCostUnified(CostInput{
+			Ctx:            ctx,
+			Model:          billingModel,
+			GroupID:        &gid,
+			Tokens:         tokens,
+			RequestCount:   1,
+			RateMultiplier: multiplier,
+			ServiceTier:    serviceTier,
+			Resolver:       s.resolver,
+		})
+	} else {
+		cost, err = s.billingService.CalculateCostWithServiceTier(billingModel, tokens, multiplier, serviceTier)
+	}
 	if err != nil {
 		cost = &CostBreakdown{ActualCost: 0}
 	}
@@ -4421,34 +4638,58 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
 	requestID := resolveUsageBillingRequestID(ctx, result.RequestID)
+
+	// 确定 RequestedModel（渠道映射前的原始模型）
+	requestedModel := result.Model
+	if input.OriginalModel != "" {
+		requestedModel = input.OriginalModel
+	}
+
 	usageLog := &UsageLog{
-		UserID:                user.ID,
-		APIKeyID:              apiKey.ID,
-		AccountID:             account.ID,
-		RequestID:             requestID,
-		Model:                 billingModel,
-		ServiceTier:           result.ServiceTier,
-		ReasoningEffort:       result.ReasoningEffort,
-		InboundEndpoint:       optionalTrimmedStringPtr(input.InboundEndpoint),
-		UpstreamEndpoint:      optionalTrimmedStringPtr(input.UpstreamEndpoint),
-		InputTokens:           actualInputTokens,
-		OutputTokens:          result.Usage.OutputTokens,
-		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:       result.Usage.CacheReadInputTokens,
-		InputCost:             cost.InputCost,
-		OutputCost:            cost.OutputCost,
-		CacheCreationCost:     cost.CacheCreationCost,
-		CacheReadCost:         cost.CacheReadCost,
-		TotalCost:             cost.TotalCost,
-		ActualCost:            cost.ActualCost,
-		RateMultiplier:        multiplier,
-		AccountRateMultiplier: &accountRateMultiplier,
-		BillingType:           billingType,
-		Stream:                result.Stream,
-		OpenAIWSMode:          result.OpenAIWSMode,
-		DurationMs:            &durationMs,
-		FirstTokenMs:          result.FirstTokenMs,
-		CreatedAt:             time.Now(),
+		UserID:              user.ID,
+		APIKeyID:            apiKey.ID,
+		AccountID:           account.ID,
+		RequestID:           requestID,
+		Model:               result.Model,
+		RequestedModel:      requestedModel,
+		UpstreamModel:       optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
+		ServiceTier:         result.ServiceTier,
+		ReasoningEffort:     result.ReasoningEffort,
+		InboundEndpoint:     optionalTrimmedStringPtr(input.InboundEndpoint),
+		UpstreamEndpoint:    optionalTrimmedStringPtr(input.UpstreamEndpoint),
+		InputTokens:         actualInputTokens,
+		OutputTokens:        result.Usage.OutputTokens,
+		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
+		CacheReadTokens:     result.Usage.CacheReadInputTokens,
+		ImageOutputTokens:   result.Usage.ImageOutputTokens,
+	}
+	if cost != nil {
+		usageLog.InputCost = cost.InputCost
+		usageLog.OutputCost = cost.OutputCost
+		usageLog.ImageOutputCost = cost.ImageOutputCost
+		usageLog.CacheCreationCost = cost.CacheCreationCost
+		usageLog.CacheReadCost = cost.CacheReadCost
+		usageLog.TotalCost = cost.TotalCost
+		usageLog.ActualCost = cost.ActualCost
+	}
+	usageLog.RateMultiplier = multiplier
+	usageLog.AccountRateMultiplier = &accountRateMultiplier
+	usageLog.BillingType = billingType
+	usageLog.Stream = result.Stream
+	usageLog.OpenAIWSMode = result.OpenAIWSMode
+	usageLog.DurationMs = &durationMs
+	usageLog.FirstTokenMs = result.FirstTokenMs
+	usageLog.CreatedAt = time.Now()
+	// 设置渠道信息
+	usageLog.ChannelID = optionalInt64Ptr(input.ChannelID)
+	usageLog.ModelMappingChain = optionalTrimmedStringPtr(input.ModelMappingChain)
+	// 设置计费模式
+	if cost != nil && cost.BillingMode != "" {
+		billingMode := cost.BillingMode
+		usageLog.BillingMode = &billingMode
+	} else {
+		billingMode := string(BillingModeToken)
+		usageLog.BillingMode = &billingMode
 	}
 	// 添加 UserAgent
 	if input.UserAgent != "" {
@@ -4961,12 +5202,4 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 		// Only store known effort levels for now to keep UI consistent.
 		return ""
 	}
-}
-
-func optionalTrimmedStringPtr(raw string) *string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return nil
-	}
-	return &trimmed
 }

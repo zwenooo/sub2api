@@ -10,6 +10,7 @@
       />
       <Select :model-value="filters.platform" class="w-40" :options="pOpts" @update:model-value="updatePlatform" @change="$emit('change')" />
       <Select :model-value="filters.type" class="w-40" :options="tOpts" @update:model-value="updateType" @change="$emit('change')" />
+      <Select :model-value="filters.privacy_mode" class="w-40" :options="privacyOpts" @update:model-value="updatePrivacyMode" @change="$emit('change')" />
       <Select :model-value="filters.group" class="w-40" :options="gOpts" @update:model-value="updateGroup" @change="$emit('change')" />
     </div>
     <div class="flex flex-wrap items-center gap-2">
@@ -37,8 +38,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
-import type { AdminGroup } from '@/types'
-import type { AdminAccountStatusSummary } from '@/types'
+import type { AdminAccountStatusSummary, AdminGroup } from '@/types'
 
 const props = defineProps<{
   searchQuery: string
@@ -67,6 +67,10 @@ const updateStatus = (value: string | number | boolean | null) => {
   emit('change')
 }
 
+const updatePrivacyMode = (value: string | number | boolean | null) => {
+  emit('update:filters', { ...props.filters, privacy_mode: value })
+}
+
 const updateGroup = (value: string | number | boolean | null) => {
   emit('update:filters', { ...props.filters, group: value })
 }
@@ -88,8 +92,17 @@ const tOpts = computed(() => [
   { value: 'bedrock', label: 'AWS Bedrock' }
 ])
 
+const privacyOpts = computed(() => [
+  { value: '', label: t('admin.accounts.allPrivacyModes') },
+  { value: '__unset__', label: t('admin.accounts.privacyUnset') },
+  { value: 'training_off', label: 'Privacy' },
+  { value: 'training_set_cf_blocked', label: 'CF' },
+  { value: 'training_set_failed', label: 'Fail' }
+])
+
 const gOpts = computed(() => [
   { value: '', label: t('admin.accounts.allGroups') },
+  { value: 'ungrouped', label: t('admin.accounts.ungroupedGroup') },
   ...(props.groups || []).map(g => ({ value: String(g.id), label: g.name }))
 ])
 

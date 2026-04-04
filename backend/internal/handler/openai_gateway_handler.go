@@ -38,12 +38,15 @@ type OpenAIGatewayHandler struct {
 	cfg                     *config.Config
 }
 
-const (
-	openAIInboundEndpointResponses       = "/v1/responses"
-	openAIInboundEndpointMessages        = "/v1/messages"
-	openAIInboundEndpointChatCompletions = "/v1/chat/completions"
-	openAIUpstreamEndpointResponses      = "/v1/responses"
-)
+func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
+	if fallbackModel = strings.TrimSpace(fallbackModel); fallbackModel != "" {
+		return fallbackModel
+	}
+	if apiKey == nil || apiKey.Group == nil {
+		return ""
+	}
+	return strings.TrimSpace(apiKey.Group.DefaultMappedModel)
+}
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
 func NewOpenAIGatewayHandler(
@@ -183,6 +186,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
+	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
+
+	// 解析渠道级模型映射
+	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
 	if !h.validateFunctionCallOutputRequest(c, body, reqLog) {
@@ -286,7 +293,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, body)
+		// 应用渠道模型映射到请求体
+		forwardBody := body
+		if channelMapping.Mapped {
+			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
+		}
+		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
@@ -378,12 +390,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				User:               apiKey.User,
 				Account:            account,
 				Subscription:       subscription,
-				InboundEndpoint:    normalizedOpenAIInboundEndpoint(c, openAIInboundEndpointResponses),
-				UpstreamEndpoint:   normalizedOpenAIUpstreamEndpoint(c, openAIUpstreamEndpointResponses),
+				InboundEndpoint:    GetInboundEndpoint(c),
+				UpstreamEndpoint:   GetUpstreamEndpoint(c, account.Platform),
 				UserAgent:          userAgent,
 				IPAddress:          clientIP,
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      h.apiKeyService,
+				ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.responses"),
@@ -546,11 +559,16 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	routingModel := service.NormalizeOpenAICompatRequestedModel(reqModel)
 	reqStream := gjson.GetBytes(body, "stream").Bool()
 
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
+	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
+
+	// 解析渠道级模型映射
+	channelMappingMsg, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
 	if h.errorPassthroughService != nil {
@@ -613,7 +631,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			apiKey.GroupID,
 			"", // no previous_response_id
 			sessionHash,
-			reqModel,
+			routingModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 		)
@@ -628,7 +646,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				if apiKey.Group != nil {
 					defaultModel = apiKey.Group.DefaultMappedModel
 				}
-				if defaultModel != "" && defaultModel != reqModel {
+				if defaultModel != "" && defaultModel != routingModel {
 					reqLog.Info("openai_messages.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
 					)
@@ -676,10 +694,15 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 
-		// 仅在调度时实际触发了降级（原模型无可用账号、改用默认模型重试成功）时，
-		// 才将降级模型传给 Forward 层做模型替换；否则保持用户请求的原始模型。
-		defaultMappedModel := c.GetString("openai_messages_fallback_model")
-		result, err := h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, body, promptCacheKey, defaultMappedModel)
+		// Forward 层需要始终拿到 group 默认映射模型，这样未命中账号级映射的
+		// Claude 兼容模型才不会在后续 Codex 规范化中意外退化到 gpt-5.1。
+		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(apiKey, c.GetString("openai_messages_fallback_model"))
+		// 应用渠道模型映射到请求体
+		forwardBody := body
+		if channelMappingMsg.Mapped {
+			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMappingMsg.MappedModel)
+		}
+		result, err := h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
@@ -762,12 +785,13 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				User:               apiKey.User,
 				Account:            account,
 				Subscription:       subscription,
-				InboundEndpoint:    normalizedOpenAIInboundEndpoint(c, openAIInboundEndpointMessages),
-				UpstreamEndpoint:   normalizedOpenAIUpstreamEndpoint(c, openAIUpstreamEndpointResponses),
+				InboundEndpoint:    GetInboundEndpoint(c),
+				UpstreamEndpoint:   GetUpstreamEndpoint(c, account.Platform),
 				UserAgent:          userAgent,
 				IPAddress:          clientIP,
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      h.apiKeyService,
+				ChannelUsageFields: channelMappingMsg.ToUsageFields(reqModel, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.messages"),
@@ -1108,6 +1132,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.String("previous_response_id_kind", previousResponseIDKind),
 	)
 	setOpsRequestContext(c, reqModel, true, firstMessage)
+	setOpsEndpointContext(c, "", int16(service.RequestTypeWSV2))
+
+	// 解析渠道级模型映射
+	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, reqModel)
 
 	var currentUserRelease func()
 	var currentAccountRelease func()
@@ -1261,12 +1289,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					User:               apiKey.User,
 					Account:            account,
 					Subscription:       subscription,
-					InboundEndpoint:    normalizedOpenAIInboundEndpoint(c, openAIInboundEndpointResponses),
-					UpstreamEndpoint:   normalizedOpenAIUpstreamEndpoint(c, openAIUpstreamEndpointResponses),
+					InboundEndpoint:    GetInboundEndpoint(c),
+					UpstreamEndpoint:   GetUpstreamEndpoint(c, account.Platform),
 					UserAgent:          userAgent,
 					IPAddress:          clientIP,
 					RequestPayloadHash: service.HashUsageRequestPayload(firstMessage),
 					APIKeyService:      h.apiKeyService,
+					ChannelUsageFields: channelMappingWS.ToUsageFields(reqModel, result.UpstreamModel),
 				}); err != nil {
 					reqLog.Error("openai.websocket_record_usage_failed",
 						zap.Int64("account_id", account.ID),
@@ -1278,7 +1307,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		},
 	}
 
-	if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, firstMessage, hooks); err != nil {
+	// 应用渠道模型映射到 WebSocket 首条消息
+	wsFirstMessage := firstMessage
+	if channelMappingWS.Mapped {
+		wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
+	}
+
+	if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
 		reqLog.Warn("openai.websocket_proxy_failed",
@@ -1469,6 +1504,10 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		}
 	}
 
+	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
+	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
+	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
+
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
@@ -1477,6 +1516,7 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
 func (h *OpenAIGatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
+	service.SetOpsUpstreamError(c, statusCode, errMsg, "")
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
@@ -1568,62 +1608,6 @@ func openAIWSIngressFallbackSessionSeed(userID, apiKeyID int64, groupID *int64) 
 		gid = *groupID
 	}
 	return fmt.Sprintf("openai_ws_ingress:%d:%d:%d", gid, userID, apiKeyID)
-}
-
-func normalizedOpenAIInboundEndpoint(c *gin.Context, fallback string) string {
-	path := strings.TrimSpace(fallback)
-	if c != nil {
-		if fullPath := strings.TrimSpace(c.FullPath()); fullPath != "" {
-			path = fullPath
-		} else if c.Request != nil && c.Request.URL != nil {
-			if requestPath := strings.TrimSpace(c.Request.URL.Path); requestPath != "" {
-				path = requestPath
-			}
-		}
-	}
-
-	switch {
-	case strings.Contains(path, openAIInboundEndpointChatCompletions):
-		return openAIInboundEndpointChatCompletions
-	case strings.Contains(path, openAIInboundEndpointMessages):
-		return openAIInboundEndpointMessages
-	case strings.Contains(path, openAIInboundEndpointResponses):
-		return openAIInboundEndpointResponses
-	default:
-		return path
-	}
-}
-
-func normalizedOpenAIUpstreamEndpoint(c *gin.Context, fallback string) string {
-	base := strings.TrimSpace(fallback)
-	if base == "" {
-		base = openAIUpstreamEndpointResponses
-	}
-	base = strings.TrimRight(base, "/")
-
-	if c == nil || c.Request == nil || c.Request.URL == nil {
-		return base
-	}
-
-	path := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
-	if path == "" {
-		return base
-	}
-
-	idx := strings.LastIndex(path, "/responses")
-	if idx < 0 {
-		return base
-	}
-
-	suffix := strings.TrimSpace(path[idx+len("/responses"):])
-	if suffix == "" || suffix == "/" {
-		return base
-	}
-	if !strings.HasPrefix(suffix, "/") {
-		return base
-	}
-
-	return base + suffix
 }
 
 func isOpenAIWSUpgradeRequest(r *http.Request) bool {

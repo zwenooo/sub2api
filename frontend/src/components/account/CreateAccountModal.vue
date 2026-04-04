@@ -2169,6 +2169,14 @@
               />
             </button>
           </div>
+          <!-- Profile selector -->
+          <div v-if="tlsFingerprintEnabled" class="mt-3">
+            <select v-model="tlsFingerprintProfileId" class="input">
+              <option :value="null">{{ t('admin.accounts.quotaControl.tlsFingerprint.defaultProfile') }}</option>
+              <option v-if="tlsFingerprintProfiles.length > 0" :value="-1">{{ t('admin.accounts.quotaControl.tlsFingerprint.randomProfile') }}</option>
+              <option v-for="p in tlsFingerprintProfiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+          </div>
         </div>
 
         <!-- Session ID Masking -->
@@ -2235,6 +2243,41 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.quotaControl.cacheTTLOverride.targetHint') }}
             </p>
+          </div>
+        </div>
+
+        <!-- Custom Base URL Relay -->
+        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.customBaseUrl.label') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.quotaControl.customBaseUrl.hint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="customBaseUrlEnabled = !customBaseUrlEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                customBaseUrlEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  customBaseUrlEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="customBaseUrlEnabled" class="mt-3">
+            <input
+              v-model="customBaseUrl"
+              type="text"
+              class="input"
+              :placeholder="t('admin.accounts.quotaControl.customBaseUrl.urlHint')"
+            />
           </div>
         </div>
       </div>
@@ -2449,6 +2492,33 @@
             </div>
           </div>
         </div>
+        <div v-if="form.platform === 'antigravity'" class="mt-3 flex items-center gap-2">
+          <label class="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              v-model="allowOverages"
+              class="h-4 w-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500"
+            />
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t('admin.accounts.allowOverages') }}
+            </span>
+          </label>
+          <div class="group relative">
+            <span
+              class="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-gray-200 text-xs text-gray-500 hover:bg-gray-300 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500"
+            >
+              ?
+            </span>
+            <div
+              class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
+            >
+              {{ t('admin.accounts.allowOveragesTooltip') }}
+              <div
+                class="absolute bottom-full left-3 border-4 border-transparent border-b-gray-900 dark:border-b-gray-700"
+              ></div>
+            </div>
+          </div>
+        </div>
 
         <!-- Group Selection - 仅标准模式显示 -->
         <GroupSelector
@@ -2477,6 +2547,7 @@
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
         :show-refresh-token-option="form.platform === 'openai' || form.platform === 'sora' || form.platform === 'antigravity'"
+        :show-mobile-refresh-token-option="form.platform === 'openai'"
         :show-session-token-option="form.platform === 'sora'"
         :show-access-token-option="form.platform === 'sora'"
         :platform="form.platform"
@@ -2484,6 +2555,7 @@
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
         @validate-refresh-token="handleValidateRefreshToken"
+        @validate-mobile-refresh-token="handleOpenAIValidateMobileRT"
         @validate-session-token="handleValidateSessionToken"
         @import-access-token="handleImportAccessToken"
       />
@@ -2991,6 +3063,7 @@ const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OF
 const codexCLIOnlyEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
+const allowOverages = ref(false) // For antigravity accounts: enable AI Credits overages
 const antigravityAccountType = ref<'oauth' | 'upstream'>('oauth') // For antigravity: oauth or upstream
 const soraAccountType = ref<'oauth' | 'apikey'>('oauth') // For sora: oauth or apikey (upstream)
 const upstreamBaseUrl = ref('') // For upstream type: base URL
@@ -3016,6 +3089,13 @@ const getAntigravityModelMappingKey = createStableObjectKeyResolver<ModelMapping
 const getTempUnschedRuleKey = createStableObjectKeyResolver<TempUnschedRuleForm>('create-temp-unsched-rule')
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
 const geminiAIStudioOAuthEnabled = ref(false)
+
+function buildAntigravityExtra(): Record<string, unknown> | undefined {
+  const extra: Record<string, unknown> = {}
+  if (mixedScheduling.value) extra.mixed_scheduling = true
+  if (allowOverages.value) extra.allow_overages = true
+  return Object.keys(extra).length > 0 ? extra : undefined
+}
 
 const showMixedChannelWarning = ref(false)
 const mixedChannelWarningDetails = ref<{ groupName: string; currentPlatform: string; otherPlatform: string } | null>(
@@ -3045,9 +3125,13 @@ const umqModeOptions = computed(() => [
   { value: 'serialize', label: t('admin.accounts.quotaControl.rpmLimit.umqModeSerialize') },
 ])
 const tlsFingerprintEnabled = ref(false)
+const tlsFingerprintProfileId = ref<number | null>(null)
+const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
 const sessionIdMaskingEnabled = ref(false)
 const cacheTTLOverrideEnabled = ref(false)
 const cacheTTLOverrideTarget = ref<string>('5m')
+const customBaseUrlEnabled = ref(false)
+const customBaseUrl = ref('')
 
 // Gemini tier selection (used as fallback when auto-detection is unavailable/fails)
 const geminiTierGoogleOne = ref<'google_one_free' | 'google_ai_pro' | 'google_ai_ultra'>('google_one_free')
@@ -3210,6 +3294,10 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
+      // Load TLS fingerprint profiles
+      adminAPI.tlsFingerprintProfiles.list()
+        .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
+        .catch(() => { tlsFingerprintProfiles.value = [] })
       // Modal opened - fill related models
       allowedModels.value = [...getModelsByPlatform(form.platform)]
       // Antigravity: 默认使用映射模式并填充默认映射
@@ -3282,6 +3370,7 @@ watch(
       accountCategory.value = 'oauth-based'
       antigravityAccountType.value = 'oauth'
     } else {
+      allowOverages.value = false
       antigravityWhitelistModels.value = []
       antigravityModelMappings.value = []
       antigravityModelRestrictionMode.value = 'mapping'
@@ -3709,9 +3798,13 @@ const resetForm = () => {
   rpmStickyBuffer.value = null
   userMsgQueueMode.value = ''
   tlsFingerprintEnabled.value = false
+  tlsFingerprintProfileId.value = null
   sessionIdMaskingEnabled.value = false
   cacheTTLOverrideEnabled.value = false
   cacheTTLOverrideTarget.value = '5m'
+  customBaseUrlEnabled.value = false
+  customBaseUrl.value = ''
+  allowOverages.value = false
   antigravityAccountType.value = 'oauth'
   upstreamBaseUrl.value = ''
   upstreamApiKey.value = ''
@@ -3960,7 +4053,7 @@ const handleSubmit = async () => {
 
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
 
-    const extra = mixedScheduling.value ? { mixed_scheduling: true } : undefined
+    const extra = buildAntigravityExtra()
     await createAccountAndFinish(form.platform, 'apikey', credentials, extra)
     return
   }
@@ -4323,11 +4416,14 @@ const handleOpenAIExchange = async (authCode: string) => {
 }
 
 // OpenAI 手动 RT 批量验证和创建
-const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
+// OpenAI Mobile RT 使用的 client_id（与后端 openai.SoraClientID 一致）
+const OPENAI_MOBILE_RT_CLIENT_ID = 'app_LlGpXReQgckcGGUo2JrYvtJK'
+
+// OpenAI/Sora RT 批量验证和创建（共享逻辑）
+const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string) => {
   const oauthClient = activeOpenAIOAuth.value
   if (!refreshTokenInput.trim()) return
 
-  // Parse multiple refresh tokens (one per line)
   const refreshTokens = refreshTokenInput
     .split('\n')
     .map((rt) => rt.trim())
@@ -4352,7 +4448,8 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
       try {
         const tokenInfo = await oauthClient.validateRefreshToken(
           refreshTokens[i],
-          form.proxy_id
+          form.proxy_id,
+          clientId
         )
         if (!tokenInfo) {
           failedCount++
@@ -4362,6 +4459,9 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
         }
 
         const credentials = oauthClient.buildCredentials(tokenInfo)
+        if (clientId) {
+          credentials.client_id = clientId
+        }
         const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
         const extra = buildOpenAIExtra(oauthExtra)
 
@@ -4373,8 +4473,9 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
           }
         }
 
-        // Generate account name with index for batch
-        const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
+        // Generate account name; fallback to email if name is empty (ent schema requires NotEmpty)
+        const baseName = form.name || tokenInfo.email || 'OpenAI OAuth Account'
+        const accountName = refreshTokens.length > 1 ? `${baseName} #${i + 1}` : baseName
 
         let openaiAccountId: string | number | undefined
 
@@ -4456,6 +4557,12 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
     oauthClient.loading.value = false
   }
 }
+
+// 手动输入 RT（Codex CLI client_id，默认）
+const handleOpenAIValidateRT = (rt: string) => handleOpenAIBatchRT(rt)
+
+// 手动输入 Mobile RT（SoraClientID）
+const handleOpenAIValidateMobileRT = (rt: string) => handleOpenAIBatchRT(rt, OPENAI_MOBILE_RT_CLIENT_ID)
 
 // Sora 手动 ST 批量验证和创建
 const handleSoraValidateST = async (sessionTokenInput: string) => {
@@ -4706,7 +4813,7 @@ const handleAntigravityExchange = async (authCode: string) => {
 		if (antigravityModelMapping) {
 			credentials.model_mapping = antigravityModelMapping
 		}
-		const extra = mixedScheduling.value ? { mixed_scheduling: true } : undefined
+		const extra = buildAntigravityExtra()
 		await createAccountAndFinish('antigravity', 'oauth', credentials, extra)
   } catch (error: any) {
     antigravityOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
@@ -4772,6 +4879,9 @@ const handleAnthropicExchange = async (authCode: string) => {
     // Add TLS fingerprint settings
     if (tlsFingerprintEnabled.value) {
       extra.enable_tls_fingerprint = true
+      if (tlsFingerprintProfileId.value) {
+        extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
+      }
     }
 
     // Add session ID masking settings
@@ -4783,6 +4893,12 @@ const handleAnthropicExchange = async (authCode: string) => {
     if (cacheTTLOverrideEnabled.value) {
       extra.cache_ttl_override_enabled = true
       extra.cache_ttl_override_target = cacheTTLOverrideTarget.value
+    }
+
+    // Add custom base URL settings
+    if (customBaseUrlEnabled.value && customBaseUrl.value.trim()) {
+      extra.custom_base_url_enabled = true
+      extra.custom_base_url = customBaseUrl.value.trim()
     }
 
     const credentials: Record<string, unknown> = { ...tokenInfo }
@@ -4887,6 +5003,9 @@ const handleCookieAuth = async (sessionKey: string) => {
         // Add TLS fingerprint settings
         if (tlsFingerprintEnabled.value) {
           extra.enable_tls_fingerprint = true
+          if (tlsFingerprintProfileId.value) {
+            extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
+          }
         }
 
         // Add session ID masking settings
@@ -4898,6 +5017,12 @@ const handleCookieAuth = async (sessionKey: string) => {
         if (cacheTTLOverrideEnabled.value) {
           extra.cache_ttl_override_enabled = true
           extra.cache_ttl_override_target = cacheTTLOverrideTarget.value
+        }
+
+        // Add custom base URL settings
+        if (customBaseUrlEnabled.value && customBaseUrl.value.trim()) {
+          extra.custom_base_url_enabled = true
+          extra.custom_base_url = customBaseUrl.value.trim()
         }
 
         const accountName = keys.length > 1 ? `${form.name} #${i + 1}` : form.name
