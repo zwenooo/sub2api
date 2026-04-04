@@ -1344,6 +1344,35 @@ const isAccountInNormalStatus = (account: Account) => (
   !hasFutureTimestamp(account.overload_until) &&
   !hasFutureTimestamp(account.temp_unschedulable_until)
 )
+
+const accountMatchesGroupFilter = (account: Account) => {
+  const groupFilter = String(params.group || '').trim()
+  if (!groupFilter) return true
+  const groupIDs = Array.isArray(account.group_ids)
+    ? account.group_ids
+    : Array.isArray(account.groups)
+      ? account.groups
+          .map((group) => group?.id)
+          .filter((groupID): groupID is number => Number.isFinite(groupID))
+      : []
+  if (groupFilter === 'ungrouped') {
+    return groupIDs.length === 0
+  }
+  const parsedGroupID = Number.parseInt(groupFilter, 10)
+  if (!Number.isFinite(parsedGroupID) || parsedGroupID <= 0) return false
+  return groupIDs.includes(parsedGroupID)
+}
+
+const accountMatchesPrivacyModeFilter = (account: Account) => {
+  const privacyModeFilter = String(params.privacy_mode || '').trim()
+  if (!privacyModeFilter) return true
+  const rawPrivacyMode = account.extra?.privacy_mode
+  if (privacyModeFilter === '__unset__') {
+    return rawPrivacyMode === undefined || rawPrivacyMode === ''
+  }
+  return rawPrivacyMode === privacyModeFilter
+}
+
 const accountMatchesCurrentFilters = (account: Account) => {
   if (params.platform && account.platform !== params.platform) return false
   if (params.type && account.type !== params.type) return false
@@ -1360,6 +1389,8 @@ const accountMatchesCurrentFilters = (account: Account) => {
       return false
     }
   }
+  if (!accountMatchesGroupFilter(account)) return false
+  if (!accountMatchesPrivacyModeFilter(account)) return false
   const search = String(params.search || '').trim().toLowerCase()
   if (search && !account.name.toLowerCase().includes(search)) return false
   return true
@@ -1431,7 +1462,9 @@ const handleExportData = async () => {
               platform: params.platform,
               type: params.type,
               status: params.status,
-              search: params.search
+              group: params.group,
+              search: params.search,
+              privacy_mode: params.privacy_mode
             }
           }
     )
