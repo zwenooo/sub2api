@@ -1,2 +1,14 @@
 .cache/
 .DS_Store
+.git/
+.gitignore
+.gitattributes
+.github/
+.idea/
+.vscode/
+*_test.go
+testdata/
+coverage/
+.golangci.yml
+Dockerfile
+Makefile
