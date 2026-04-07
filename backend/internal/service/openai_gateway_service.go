@@ -1103,18 +1103,25 @@ func isOpenAITransientProcessingError(upstreamStatusCode int, upstreamMsg string
 
 // ExtractSessionID extracts the raw session ID from headers or body without hashing.
 // Used by ForwardAsAnthropic to pass as prompt_cache_key for upstream cache.
-func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) string {
-	if c == nil {
+func extractRawOpenAISessionID(c *gin.Context, body []byte) string {
+	if c != nil {
+		sessionID := strings.TrimSpace(c.GetHeader("session_id"))
+		if sessionID != "" {
+			return sessionID
+		}
+		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
+		if sessionID != "" {
+			return sessionID
+		}
+	}
+	if len(body) == 0 {
 		return ""
 	}
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
-	}
-	if sessionID == "" && len(body) > 0 {
-		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-	}
-	return sessionID
+	return strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+}
+
+func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) string {
+	return extractRawOpenAISessionID(c, body)
 }
 
 // GenerateSessionHash generates a sticky-session hash for OpenAI requests.
@@ -1124,17 +1131,7 @@ func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) str
 //  2. Header: conversation_id
 //  3. Body:   prompt_cache_key (opencode)
 func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) string {
-	if c == nil {
-		return ""
-	}
-
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
-	}
-	if sessionID == "" && len(body) > 0 {
-		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-	}
+	sessionID := extractRawOpenAISessionID(c, body)
 	if sessionID == "" {
 		return ""
 	}
@@ -1952,7 +1949,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	originalBody := body
-	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
+	reqModel, reqStream, _ := extractOpenAIRequestMetaFromBody(body)
+	promptCacheKey := extractRawOpenAISessionID(c, body)
 	originalModel := reqModel
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
@@ -2061,6 +2059,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	disablePatch := func() {
 		patchDisabled = true
+	}
+
+	if account.Type == AccountTypeOAuth && promptCacheKey != "" {
+		currentPromptCacheKey, _ := reqBody["prompt_cache_key"].(string)
+		if strings.TrimSpace(currentPromptCacheKey) != promptCacheKey {
+			reqBody["prompt_cache_key"] = promptCacheKey
+			bodyModified = true
+			markPatchSet("prompt_cache_key", promptCacheKey)
+		}
 	}
 
 	// 非透传模式下，instructions 为空时注入默认指令。

@@ -15,9 +15,11 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // 编译期接口断言
@@ -96,6 +98,31 @@ type failingGinWriter struct {
 	gin.ResponseWriter
 	failAfter int
 	writes    int
+}
+
+type openAIHTTPUpstreamRecorder struct {
+	lastReq  *http.Request
+	lastBody []byte
+	resp     *http.Response
+	err      error
+}
+
+func (u *openAIHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	u.lastReq = req
+	if req != nil && req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		u.lastBody = b
+		_ = req.Body.Close()
+		req.Body = io.NopCloser(bytes.NewReader(b))
+	}
+	if u.err != nil {
+		return nil, u.err
+	}
+	return u.resp, nil
+}
+
+func (u *openAIHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
 func (w *failingGinWriter) Write(p []byte) (int, error) {
@@ -235,6 +262,80 @@ func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
 
 	empty := svc.GenerateSessionHashWithFallback(c, []byte(`{}`), "   ")
 	require.Equal(t, "", empty)
+}
+
+func TestOpenAIGatewayService_Forward_OAuthUsesHeaderSessionAsPromptCacheKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("session_id", "sess-header-only")
+	c.Set("api_key", &APIKey{ID: 42})
+
+	upstream := &openAIHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":2}}`)),
+		},
+	}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          1001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token"},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "sess-header-only", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+
+	isolated := isolateOpenAISessionID(42, "sess-header-only")
+	require.Equal(t, isolated, upstream.lastReq.Header.Get("session_id"))
+	require.Equal(t, isolated, upstream.lastReq.Header.Get("conversation_id"))
+}
+
+func TestOpenAIGatewayService_Forward_OAuthHeaderSessionOverridesBodyPromptCacheKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"prompt_cache_key":"body-key"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("session_id", "header-key")
+	c.Set("api_key", &APIKey{ID: 7})
+
+	upstream := &openAIHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":2}}`)),
+		},
+	}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          1002,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token"},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "header-key", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+
+	isolated := isolateOpenAISessionID(7, "header-key")
+	require.Equal(t, isolated, upstream.lastReq.Header.Get("session_id"))
+	require.Equal(t, isolated, upstream.lastReq.Header.Get("conversation_id"))
 }
 
 func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
