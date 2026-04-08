@@ -3308,9 +3308,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			req.Header.Set("accept", "text/event-stream")
 		}
 		if promptCacheKey != "" {
-			isolated := isolateOpenAISessionID(apiKeyID, promptCacheKey)
-			req.Header.Set("conversation_id", isolated)
-			req.Header.Set("session_id", isolated)
+			// 先按 apiKeyID 做租户隔离，再 hash 成确定性 UUID。
+			// UUID 形态对齐上游 Codex 期望的 session_id 格式，提升缓存命中率；
+			// isolateOpenAISessionID 保留以防止跨 API Key 的 session 命名空间碰撞
+			// （compat 自动注入的 prompt_cache_key 在不同租户间是确定性可碰撞的）。
+			sessionUUID := generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey))
+			req.Header.Set("conversation_id", sessionUUID)
+			req.Header.Set("session_id", sessionUUID)
 		}
 	}
 
