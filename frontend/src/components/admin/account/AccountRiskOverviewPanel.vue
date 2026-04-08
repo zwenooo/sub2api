@@ -13,6 +13,7 @@ import {
   PointElement,
   Tooltip
 } from 'chart.js'
+import type { ChartData } from 'chart.js'
 import { Bar } from 'vue-chartjs'
 import EmptyState from '@/components/common/EmptyState.vue'
 import type { AdminAccountRiskOverview } from '@/types'
@@ -169,7 +170,12 @@ const riskChartOptions = computed(() => {
   }
 })
 
-const recoveryChartData = computed(() => {
+// 注意：这是一个 mixed chart（bar + line 叠加），chart.js v4 运行时原生支持，
+// 但 vue-chartjs 的 <Bar> 组件类型签名只接受 ChartData<'bar'>，不允许 dataset 里出现
+// type: 'line'。这里通过 `as unknown as ChartData<'bar'>` 显式告诉 TS：我们知道
+// 类型上不严丝合缝，但运行时是合法的 mixed chart 数据，由 chart.js 自己分派每个
+// dataset 的渲染器。
+const recoveryChartData = computed<ChartData<'bar'> | null>(() => {
   if (!hasRecoveryData.value) return null
   return {
     labels: recoveryBucketValues.value.map((bucket) => bucket.label),
@@ -199,7 +205,7 @@ const recoveryChartData = computed(() => {
         yAxisID: 'y1'
       }
     ]
-  }
+  } as unknown as ChartData<'bar'>
 })
 
 const recoveryChartOptions = computed(() => {

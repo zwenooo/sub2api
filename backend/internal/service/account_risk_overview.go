@@ -6,6 +6,18 @@ import (
 	"time"
 )
 
+// riskOverviewFreshnessTTL 决定一个账号的 codex 快照在风险概览里要多"新"才会被纳入统计。
+//
+// 为什么要和主动 probe 机制的 openAIProbeCacheTTL 解耦：
+//   - openAIProbeCacheTTL 管的是"要不要再发一次 probe 请求"的节奏，带着一堆前置条件
+//     （只对启用 WS v2 的账号生效、单账号最小重试间隔等）。
+//   - 风险概览只关心"这份数据还能不能信"，语义更纯粹；而且 risk overview 的"新鲜度闸门"
+//     拉得太紧会导致图表里 Unknown 爆表，拉得太松又会把僵尸账号算成安全，是一个独立的旋钮。
+//
+// 默认值和 openAIProbeCacheTTL 对齐（10min），这样主人在没有特殊诉求时风险概览的判定
+// 和主动刷新节奏一致，不会出现 "主动路径才刚刷完、风险概览却判定为陈旧" 的情况。
+const riskOverviewFreshnessTTL = 10 * time.Minute
+
 type AccountRiskOverviewFilter struct {
 	Platform    string
 	AccountType string
@@ -164,9 +176,15 @@ func (s *AccountUsageService) resolveAccountRiskCandidate(account *Account, now 
 
 	switch account.Platform {
 	case PlatformOpenAI:
+		// 新鲜度闸门：风险概览不做主动 probe（全表 probe 成本过高），
+		// 若账号的 codex 快照已陈旧（> riskOverviewFreshnessTTL），宁可归入 Unknown
+		// 也不拿旧数据制造"虚假的 below_50"。
+		if !isCodexSnapshotFreshForRiskOverview(account, now) {
+			return nil, false
+		}
 		return dominantAccountRiskCandidate(
-			progressToAccountRiskCandidate(buildCodexUsageProgressFromExtra(account.Extra, "5h", now)),
-			progressToAccountRiskCandidate(buildCodexUsageProgressFromExtra(account.Extra, "7d", now)),
+			codexProgressToRiskCandidate(buildCodexUsageProgressFromExtra(account.Extra, "5h", now), now),
+			codexProgressToRiskCandidate(buildCodexUsageProgressFromExtra(account.Extra, "7d", now), now),
 		), false
 	case PlatformAnthropic:
 		usage := s.estimateSetupTokenUsage(account)
@@ -191,6 +209,51 @@ func progressToAccountRiskCandidate(progress *UsageProgress) *accountRiskCandida
 		Utilization: progress.Utilization,
 		ResetAt:     progress.ResetsAt,
 	}
+}
+
+// codexProgressToRiskCandidate 是给 OpenAI 分支用的 candidate 转换器。
+//
+// 它在 progressToAccountRiskCandidate 的基础上多做一层"窗口过期过滤"：
+// buildCodexUsageProgressFromExtra 对过期窗口会把 Utilization 归零，但仍保留指向过去的
+// ResetsAt（见其实现里的 "归零" 分支）。progressToAccountRiskCandidate 看到 ResetsAt != nil
+// 就认为这是一个有效快照，于是账号会落入 below_50 桶 —— 这恰好制造了一种新的假安全感：
+// 一个一周前用完、之后根本没被调度的僵尸账号会被算成"安全"。
+//
+// 修法是：在 candidate 转换层直接把 ResetsAt 在过去的窗口视为"无快照"，由上层归入 Unknown。
+func codexProgressToRiskCandidate(progress *UsageProgress, now time.Time) *accountRiskCandidate {
+	if progress == nil || !hasRiskSnapshot(progress) {
+		return nil
+	}
+	if progress.ResetsAt != nil && !now.Before(*progress.ResetsAt) {
+		return nil
+	}
+	return &accountRiskCandidate{
+		Utilization: progress.Utilization,
+		ResetAt:     progress.ResetsAt,
+	}
+}
+
+// isCodexSnapshotFreshForRiskOverview 判断 OpenAI codex 快照是否足够新鲜，
+// 供风险概览使用。
+//
+// 为什么不复用 isOpenAICodexSnapshotStale：后者带有 IsOpenAIResponsesWebSocketV2Enabled()
+// 前置条件，对于没启用 WS v2 的 OAuth 账号永远返回 false，没法用来给 risk overview 把关。
+// 风险概览要的是一条纯粹的"最近更新过吗"的判定，不关心是否启用 WS。
+//
+// 新鲜度阈值独立于主动 probe 的 openAIProbeCacheTTL，见 riskOverviewFreshnessTTL 的注释。
+func isCodexSnapshotFreshForRiskOverview(account *Account, now time.Time) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	raw, ok := account.Extra["codex_usage_updated_at"]
+	if !ok {
+		return false
+	}
+	ts, err := parseTime(fmt.Sprint(raw))
+	if err != nil {
+		return false
+	}
+	return now.Sub(ts) < riskOverviewFreshnessTTL
 }
 
 func hasRiskSnapshot(progress *UsageProgress) bool {
