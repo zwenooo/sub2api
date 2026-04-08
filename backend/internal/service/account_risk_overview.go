@@ -6,18 +6,6 @@ import (
 	"time"
 )
 
-// riskOverviewFreshnessTTL 决定一个账号的 codex 快照在风险概览里要多"新"才会被纳入统计。
-//
-// 为什么要和主动 probe 机制的 openAIProbeCacheTTL 解耦：
-//   - openAIProbeCacheTTL 管的是"要不要再发一次 probe 请求"的节奏，带着一堆前置条件
-//     （只对启用 WS v2 的账号生效、单账号最小重试间隔等）。
-//   - 风险概览只关心"这份数据还能不能信"，语义更纯粹；而且 risk overview 的"新鲜度闸门"
-//     拉得太紧会导致图表里 Unknown 爆表，拉得太松又会把僵尸账号算成安全，是一个独立的旋钮。
-//
-// 默认值和 openAIProbeCacheTTL 对齐（10min），这样主人在没有特殊诉求时风险概览的判定
-// 和主动刷新节奏一致，不会出现 "主动路径才刚刷完、风险概览却判定为陈旧" 的情况。
-const riskOverviewFreshnessTTL = 10 * time.Minute
-
 type AccountRiskOverviewFilter struct {
 	Platform    string
 	AccountType string
@@ -176,12 +164,12 @@ func (s *AccountUsageService) resolveAccountRiskCandidate(account *Account, now 
 
 	switch account.Platform {
 	case PlatformOpenAI:
-		// 新鲜度闸门：风险概览不做主动 probe（全表 probe 成本过高），
-		// 若账号的 codex 快照已陈旧（> riskOverviewFreshnessTTL），宁可归入 Unknown
-		// 也不拿旧数据制造"虚假的 below_50"。
-		if !isCodexSnapshotFreshForRiskOverview(account, now) {
-			return nil, false
-		}
+		// 注意：这里不再用"codex_usage_updated_at 是否在 N 分钟内"做新鲜度闸门。
+		// 该字段只在 codex snapshot 写入路径（openai_gateway_service.go 的 snapshot 处理分支）
+		// 才被设置，频率很低；用它做闸门会把绝大多数仍然有效的账号一刀切到 Unknown 桶，
+		// 让图表"除了已限流，其他全是 0"。真正会制造假安全感的是"窗口已经重置但旧 utilization
+		// 还残留"这一种情况，这一层防御已经由 codexProgressToRiskCandidate 的 ResetsAt
+		// 过期判定承担 —— 那才是数据失效的硬指标。
 		return dominantAccountRiskCandidate(
 			codexProgressToRiskCandidate(buildCodexUsageProgressFromExtra(account.Extra, "5h", now), now),
 			codexProgressToRiskCandidate(buildCodexUsageProgressFromExtra(account.Extra, "7d", now), now),
@@ -231,29 +219,6 @@ func codexProgressToRiskCandidate(progress *UsageProgress, now time.Time) *accou
 		Utilization: progress.Utilization,
 		ResetAt:     progress.ResetsAt,
 	}
-}
-
-// isCodexSnapshotFreshForRiskOverview 判断 OpenAI codex 快照是否足够新鲜，
-// 供风险概览使用。
-//
-// 为什么不复用 isOpenAICodexSnapshotStale：后者带有 IsOpenAIResponsesWebSocketV2Enabled()
-// 前置条件，对于没启用 WS v2 的 OAuth 账号永远返回 false，没法用来给 risk overview 把关。
-// 风险概览要的是一条纯粹的"最近更新过吗"的判定，不关心是否启用 WS。
-//
-// 新鲜度阈值独立于主动 probe 的 openAIProbeCacheTTL，见 riskOverviewFreshnessTTL 的注释。
-func isCodexSnapshotFreshForRiskOverview(account *Account, now time.Time) bool {
-	if account == nil || account.Extra == nil {
-		return false
-	}
-	raw, ok := account.Extra["codex_usage_updated_at"]
-	if !ok {
-		return false
-	}
-	ts, err := parseTime(fmt.Sprint(raw))
-	if err != nil {
-		return false
-	}
-	return now.Sub(ts) < riskOverviewFreshnessTTL
 }
 
 func hasRiskSnapshot(progress *UsageProgress) bool {
