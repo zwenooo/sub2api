@@ -15,6 +15,7 @@ import type {
   AccountUsageStatsResponse,
   TempUnschedulableStatus,
   AdminAccountStatusSummary,
+  AdminAccountRiskOverview,
   AdminDataPayload,
   AdminDataImportResult,
   AdminOpenAIAuthImportRequest,
@@ -67,6 +68,19 @@ export async function getStatusSummary(filters?: {
   privacy_mode?: string
 }): Promise<AdminAccountStatusSummary> {
   const { data } = await apiClient.get<AdminAccountStatusSummary>('/admin/accounts/status-summary', {
+    params: filters
+  })
+  return data
+}
+
+export async function getRiskOverview(filters?: {
+  platform?: string
+  type?: string
+  group?: string
+  search?: string
+  privacy_mode?: string
+}): Promise<AdminAccountRiskOverview> {
+  const { data } = await apiClient.get<AdminAccountRiskOverview>('/admin/accounts/risk-overview', {
     params: filters
   })
   return data
@@ -785,6 +799,7 @@ export async function setPrivacy(id: number): Promise<Account> {
 export const accountsAPI = {
   list,
   getStatusSummary,
+  getRiskOverview,
   listWithEtag,
   getById,
   create,

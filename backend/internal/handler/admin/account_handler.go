@@ -178,6 +178,14 @@ type AccountStatusSummaryResponse struct {
 	TempUnschedulable int64 `json:"temp_unschedulable"`
 }
 
+type accountOverviewQueryFilter struct {
+	Platform    string
+	AccountType string
+	Search      string
+	PrivacyMode string
+	GroupID     int64
+}
+
 const accountListGroupUngroupedQueryValue = "ungrouped"
 
 func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, account *service.Account) AccountWithConcurrency {
@@ -393,33 +401,40 @@ func (h *AccountHandler) List(c *gin.Context) {
 	response.Paginated(c, result, total, page, pageSize)
 }
 
+func parseAccountOverviewQueryFilter(c *gin.Context) (accountOverviewQueryFilter, error) {
+	filter := accountOverviewQueryFilter{
+		Platform:    c.Query("platform"),
+		AccountType: c.Query("type"),
+		Search:      strings.TrimSpace(c.Query("search")),
+		PrivacyMode: strings.TrimSpace(c.Query("privacy_mode")),
+	}
+	if len(filter.Search) > 100 {
+		filter.Search = filter.Search[:100]
+	}
+
+	if groupIDStr := c.Query("group"); groupIDStr != "" {
+		if groupIDStr == accountListGroupUngroupedQueryValue {
+			filter.GroupID = service.AccountListGroupUngrouped
+			return filter, nil
+		}
+
+		parsedGroupID, err := strconv.ParseInt(groupIDStr, 10, 64)
+		if err != nil || parsedGroupID < 0 {
+			return accountOverviewQueryFilter{}, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter")
+		}
+		filter.GroupID = parsedGroupID
+	}
+
+	return filter, nil
+}
+
 // GetStatusSummary handles counting accounts by runtime status under the current non-status filters.
 // GET /api/v1/admin/accounts/status-summary
 func (h *AccountHandler) GetStatusSummary(c *gin.Context) {
-	platform := c.Query("platform")
-	accountType := c.Query("type")
-	search := strings.TrimSpace(c.Query("search"))
-	privacyMode := strings.TrimSpace(c.Query("privacy_mode"))
-	if len(search) > 100 {
-		search = search[:100]
-	}
-
-	var groupID int64
-	if groupIDStr := c.Query("group"); groupIDStr != "" {
-		if groupIDStr == accountListGroupUngroupedQueryValue {
-			groupID = service.AccountListGroupUngrouped
-		} else {
-			parsedGroupID, parseErr := strconv.ParseInt(groupIDStr, 10, 64)
-			if parseErr != nil {
-				response.ErrorFrom(c, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter"))
-				return
-			}
-			if parsedGroupID < 0 {
-				response.ErrorFrom(c, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter"))
-				return
-			}
-			groupID = parsedGroupID
-		}
+	filter, err := parseAccountOverviewQueryFilter(c)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
 	}
 
 	summary := AccountStatusSummaryResponse{}
@@ -440,7 +455,17 @@ func (h *AccountHandler) GetStatusSummary(c *gin.Context) {
 	for _, query := range queries {
 		query := query
 		g.Go(func() error {
-			_, total, err := h.adminService.ListAccounts(ctx, 1, 1, platform, accountType, query.status, search, groupID, privacyMode)
+			_, total, err := h.adminService.ListAccounts(
+				ctx,
+				1,
+				1,
+				filter.Platform,
+				filter.AccountType,
+				query.status,
+				filter.Search,
+				filter.GroupID,
+				filter.PrivacyMode,
+			)
 			if err != nil {
 				return err
 			}
@@ -455,6 +480,34 @@ func (h *AccountHandler) GetStatusSummary(c *gin.Context) {
 	}
 
 	response.Success(c, summary)
+}
+
+// GetRiskOverview handles the account-page risk and recovery overview under the current non-status filters.
+// GET /api/v1/admin/accounts/risk-overview
+func (h *AccountHandler) GetRiskOverview(c *gin.Context) {
+	filter, err := parseAccountOverviewQueryFilter(c)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if h.accountUsageService == nil {
+		response.ErrorFrom(c, infraerrors.InternalServer("ACCOUNT_USAGE_SERVICE_UNAVAILABLE", "account usage service unavailable"))
+		return
+	}
+
+	overview, err := h.accountUsageService.GetRiskOverview(c.Request.Context(), service.AccountRiskOverviewFilter{
+		Platform:    filter.Platform,
+		AccountType: filter.AccountType,
+		Search:      filter.Search,
+		GroupID:     filter.GroupID,
+		PrivacyMode: filter.PrivacyMode,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, overview)
 }
 
 func buildAccountsListETag(

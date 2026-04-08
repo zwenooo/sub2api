@@ -682,6 +682,29 @@ export interface AdminAccountStatusSummary {
   temp_unschedulable: number
 }
 
+export interface AdminAccountRiskOverviewSummary {
+  total_accounts: number
+  supported_accounts: number
+  charted_accounts: number
+  excluded_accounts: number
+  unknown_accounts: number
+  high_risk_accounts: number
+  rate_limited_accounts: number
+  recovery_tracked_accounts: number
+}
+
+export interface AdminAccountRiskOverviewBucket {
+  bucket_key: string
+  count: number
+}
+
+export interface AdminAccountRiskOverview {
+  generated_at: string
+  summary: AdminAccountRiskOverviewSummary
+  risk_buckets: AdminAccountRiskOverviewBucket[]
+  recovery_buckets: AdminAccountRiskOverviewBucket[]
+}
+
 export interface Account {
   id: number
   name: string

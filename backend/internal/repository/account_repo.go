@@ -459,62 +459,7 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 }
 
 func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
-	q := r.client.Account.Query()
-
-	if platform != "" {
-		q = q.Where(dbaccount.PlatformEQ(platform))
-	}
-	if accountType != "" {
-		q = q.Where(dbaccount.TypeEQ(accountType))
-	}
-	if status != "" {
-		switch status {
-		case service.StatusActive:
-			now := time.Now()
-			q = q.Where(
-				dbaccount.StatusEQ(service.StatusActive),
-				dbaccount.SchedulableEQ(true),
-				tempUnschedulablePredicate(),
-				notExpiredPredicate(now),
-				dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-				dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
-			)
-		case "rate_limited":
-			q = q.Where(dbaccount.RateLimitResetAtGT(time.Now()))
-		case "temp_unschedulable":
-			q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
-				col := s.C("temp_unschedulable_until")
-				s.Where(entsql.And(
-					entsql.Not(entsql.IsNull(col)),
-					entsql.GT(col, entsql.Expr("NOW()")),
-				))
-			}))
-		default:
-			q = q.Where(dbaccount.StatusEQ(status))
-		}
-	}
-	if search != "" {
-		q = q.Where(dbaccount.NameContainsFold(search))
-	}
-	if groupID == service.AccountListGroupUngrouped {
-		q = q.Where(dbaccount.Not(dbaccount.HasAccountGroups()))
-	} else if groupID > 0 {
-		q = q.Where(dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(groupID)))
-	}
-	if privacyMode != "" {
-		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
-			path := sqljson.Path("privacy_mode")
-			switch privacyMode {
-			case service.AccountPrivacyModeUnsetFilter:
-				s.Where(entsql.Or(
-					entsql.Not(sqljson.HasKey(dbaccount.FieldExtra, path)),
-					sqljson.ValueEQ(dbaccount.FieldExtra, "", path),
-				))
-			default:
-				s.Where(sqljson.ValueEQ(dbaccount.FieldExtra, privacyMode, path))
-			}
-		}))
-	}
+	q := applyAccountListFilters(r.client.Account.Query(), platform, accountType, status, search, groupID, privacyMode)
 
 	total, err := q.Count(ctx)
 	if err != nil {
@@ -535,6 +480,25 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		return nil, nil, err
 	}
 	return outAccounts, paginationResultFromTotal(int64(total), params), nil
+}
+
+func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {
+	accounts, err := applyAccountListFilters(r.client.Account.Query(), platform, accountType, status, search, groupID, privacyMode).
+		Order(dbent.Desc(dbaccount.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]service.Account, 0, len(accounts))
+	for _, account := range accounts {
+		out := accountEntityToService(account)
+		if out == nil {
+			continue
+		}
+		result = append(result, *out)
+	}
+	return result, nil
 }
 
 func (r *accountRepository) ListByGroup(ctx context.Context, groupID int64) ([]service.Account, error) {
@@ -1535,6 +1499,64 @@ func notExpiredPredicate(now time.Time) dbpredicate.Account {
 		dbaccount.ExpiresAtGT(now),
 		dbaccount.AutoPauseOnExpiredEQ(false),
 	)
+}
+
+func applyAccountListFilters(q *dbent.AccountQuery, platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
+	if platform != "" {
+		q = q.Where(dbaccount.PlatformEQ(platform))
+	}
+	if accountType != "" {
+		q = q.Where(dbaccount.TypeEQ(accountType))
+	}
+	if status != "" {
+		switch status {
+		case service.StatusActive:
+			now := time.Now()
+			q = q.Where(
+				dbaccount.StatusEQ(service.StatusActive),
+				dbaccount.SchedulableEQ(true),
+				tempUnschedulablePredicate(),
+				notExpiredPredicate(now),
+				dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
+				dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+			)
+		case "rate_limited":
+			q = q.Where(dbaccount.RateLimitResetAtGT(time.Now()))
+		case "temp_unschedulable":
+			q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+				col := s.C("temp_unschedulable_until")
+				s.Where(entsql.And(
+					entsql.Not(entsql.IsNull(col)),
+					entsql.GT(col, entsql.Expr("NOW()")),
+				))
+			}))
+		default:
+			q = q.Where(dbaccount.StatusEQ(status))
+		}
+	}
+	if search != "" {
+		q = q.Where(dbaccount.NameContainsFold(search))
+	}
+	if groupID == service.AccountListGroupUngrouped {
+		q = q.Where(dbaccount.Not(dbaccount.HasAccountGroups()))
+	} else if groupID > 0 {
+		q = q.Where(dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(groupID)))
+	}
+	if privacyMode != "" {
+		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+			path := sqljson.Path("privacy_mode")
+			switch privacyMode {
+			case service.AccountPrivacyModeUnsetFilter:
+				s.Where(entsql.Or(
+					entsql.Not(sqljson.HasKey(dbaccount.FieldExtra, path)),
+					sqljson.ValueEQ(dbaccount.FieldExtra, "", path),
+				))
+			default:
+				s.Where(sqljson.ValueEQ(dbaccount.FieldExtra, privacyMode, path))
+			}
+		}))
+	}
+	return q
 }
 
 func (r *accountRepository) loadProxies(ctx context.Context, proxyIDs []int64) (map[int64]*service.Proxy, error) {

@@ -1933,6 +1933,56 @@ export default {
     accounts: {
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
+      riskOverview: {
+        eyebrow: 'WINDOW RISK',
+        title: 'Rate-Limit Risk And Recovery',
+        description: 'Aggregate each account by its most dangerous 5h/7d window so “looks active” is not mistaken for real safe capacity.',
+        coverage: '{charted} / {supported} supported accounts charted',
+        excluded: '{count} non-window accounts',
+        unknown: '{count} missing window data',
+        footnote: 'Only enabled OpenAI OAuth and Anthropic OAuth/Setup Token accounts are included. This view reflects window rate-limit risk only, not other unavailable states such as error / inactive / overload.',
+        summary: {
+          charted: 'Charted',
+          highRisk: 'High Risk',
+          rateLimited: 'Rate Limited',
+          notIncluded: 'Not Included'
+        },
+        series: {
+          accounts: 'Accounts',
+          recovery: 'Recovering In Bucket',
+          cumulative: 'Cumulative Recovery'
+        },
+        riskChartTitle: 'Current Risk Distribution',
+        riskChartDescription: 'Each account is counted once, using the window with the highest current utilization as the dominant window.',
+        recoveryChartTitle: 'Recovery Timeline',
+        recoveryChartDescription: 'Only accounts currently at 80%+ utilization or already rate-limited are counted here, so you can see when pressure naturally eases.',
+        noSupportedTitle: 'No supported window accounts in the current scope',
+        noSupportedDescription: 'Switch to OpenAI OAuth or Anthropic OAuth/Setup Token accounts to view the 5h/7d risk horizon.',
+        noChartedTitle: 'No usable window snapshot yet',
+        noChartedDescription: 'These accounts support 5h/7d semantics, but they currently have no usable window snapshot, so they are not counted into any safety bucket.',
+        noRecoveryTitle: 'No high-risk accounts waiting to recover',
+        noRecoveryDescription: 'Once 80%+ or rate-limited accounts appear, this view will show when the pressure is expected to release.',
+        buckets: {
+          below_50: '<50%',
+          50_60: '50%-60%',
+          60_70: '60%-70%',
+          70_80: '70%-80%',
+          80_90: '80%-90%',
+          90_100: '90%-100%',
+          rate_limited: 'Rate Limited'
+        },
+        recoveryBuckets: {
+          under_30m: '≤30m',
+          under_1h: '30-60m',
+          under_3h: '1-3h',
+          under_6h: '3-6h',
+          under_12h: '6-12h',
+          under_24h: '12-24h',
+          under_3d: '1-3d',
+          under_7d: '3-7d',
+          over_7d: '>7d'
+        }
+      },
       createAccount: 'Create Account',
       autoRefresh: 'Auto Refresh',
       enableAutoRefresh: 'Enable auto refresh',

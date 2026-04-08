@@ -185,6 +185,12 @@
         </div>
       </template>
       <template #table>
+        <div class="mb-4">
+          <AccountRiskOverviewPanel
+            :overview="riskOverview"
+            :loading="riskOverviewLoading"
+          />
+        </div>
         <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @refresh-pending-openai="handleBatchRefreshPendingOpenAI" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
@@ -383,6 +389,7 @@ import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportOpenAIAuthModal from '@/components/admin/account/ImportOpenAIAuthModal.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
 import OpenAIAutoDisableRulesModal from '@/components/admin/account/OpenAIAutoDisableRulesModal.vue'
+import AccountRiskOverviewPanel from '@/components/admin/account/AccountRiskOverviewPanel.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
 import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
@@ -408,7 +415,8 @@ import type {
   AdminGroup,
   WindowStats,
   ClaudeModel,
-  AdminAccountStatusSummary
+  AdminAccountStatusSummary,
+  AdminAccountRiskOverview
 } from '@/types'
 
 const { t } = useI18n()
@@ -506,6 +514,10 @@ const statusSummary = ref<AdminAccountStatusSummary>({
 const statusSummaryLoading = ref(false)
 const statusSummaryReqSeq = ref(0)
 const pendingStatusSummaryRefresh = ref(false)
+const riskOverview = ref<AdminAccountRiskOverview | null>(null)
+const riskOverviewLoading = ref(false)
+const riskOverviewReqSeq = ref(0)
+const pendingRiskOverviewRefresh = ref(false)
 
 const accountRuleDraftSource = computed<'request-error' | 'upstream-error' | null>(() => {
   const raw = route.query.rule_draft_source
@@ -555,6 +567,35 @@ const refreshStatusSummary = async () => {
 const refreshStatusSummarySilently = () => {
   refreshStatusSummary().catch((error) => {
     console.error('Failed to refresh account status summary:', error)
+  })
+}
+
+const refreshRiskOverview = async () => {
+  const reqSeq = ++riskOverviewReqSeq.value
+  riskOverviewLoading.value = true
+  try {
+    const nextOverview = await adminAPI.accounts.getRiskOverview({
+      platform: String(params.platform || ''),
+      type: String(params.type || ''),
+      group: String(params.group || ''),
+      search: String(params.search || ''),
+      privacy_mode: String(params.privacy_mode || '')
+    })
+    if (reqSeq !== riskOverviewReqSeq.value) return
+    riskOverview.value = nextOverview
+  } catch (error) {
+    if (reqSeq !== riskOverviewReqSeq.value) return
+    console.error('Failed to load account risk overview:', error)
+  } finally {
+    if (reqSeq === riskOverviewReqSeq.value) {
+      riskOverviewLoading.value = false
+    }
+  }
+}
+
+const refreshRiskOverviewSilently = () => {
+  refreshRiskOverview().catch((error) => {
+    console.error('Failed to refresh account risk overview:', error)
   })
 }
 
@@ -760,6 +801,7 @@ const load = async () => {
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
   pendingStatusSummaryRefresh.value = false
+  pendingRiskOverviewRefresh.value = false
   if (isFirstLoad.value) {
     requestParams.lite = '1'
   }
@@ -768,7 +810,7 @@ const load = async () => {
     isFirstLoad.value = false
     delete requestParams.lite
   }
-  await Promise.all([refreshTodayStatsBatch(), refreshStatusSummary()])
+  await Promise.all([refreshTodayStatsBatch(), refreshStatusSummary(), refreshRiskOverview()])
 }
 
 const reload = async () => {
@@ -776,8 +818,9 @@ const reload = async () => {
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
   pendingStatusSummaryRefresh.value = false
+  pendingRiskOverviewRefresh.value = false
   await baseReload()
-  await Promise.all([refreshTodayStatsBatch(), refreshStatusSummary()])
+  await Promise.all([refreshTodayStatsBatch(), refreshStatusSummary(), refreshRiskOverview()])
 }
 
 const debouncedReload = () => {
@@ -785,6 +828,7 @@ const debouncedReload = () => {
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = true
   pendingStatusSummaryRefresh.value = true
+  pendingRiskOverviewRefresh.value = true
   baseDebouncedReload()
 }
 
@@ -814,6 +858,12 @@ watch(loading, (isLoading, wasLoading) => {
       pendingStatusSummaryRefresh.value = false
       refreshStatusSummary().catch((error) => {
         console.error('Failed to refresh account status summary after table load:', error)
+      })
+    }
+    if (pendingRiskOverviewRefresh.value) {
+      pendingRiskOverviewRefresh.value = false
+      refreshRiskOverview().catch((error) => {
+        console.error('Failed to refresh account risk overview after table load:', error)
       })
     }
   }
@@ -954,7 +1004,7 @@ const refreshAccountsIncrementally = async () => {
       hasPendingListSync.value = false
     }
 
-    await refreshTodayStatsBatch()
+    await Promise.all([refreshTodayStatsBatch(), refreshStatusSummary(), refreshRiskOverview()])
   } catch (error) {
     console.error('Auto refresh failed:', error)
   } finally {
@@ -1324,6 +1374,7 @@ const handleBulkToggleSchedulable = async (schedulable: boolean) => {
       else setSelectedIds(accountIds)
     }
     refreshStatusSummarySilently()
+    refreshRiskOverviewSilently()
   } catch (error) {
     console.error('Failed to bulk toggle schedulable:', error)
     appStore.showError(t('common.error'))
@@ -1439,6 +1490,7 @@ const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
   enterAutoRefreshSilentWindow()
   refreshStatusSummarySilently()
+  refreshRiskOverviewSilently()
 }
 const formatExportTimestamp = () => {
   const now = new Date()
@@ -1509,6 +1561,7 @@ const handleRefresh = async (a: Account) => {
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
     refreshStatusSummarySilently()
+    refreshRiskOverviewSilently()
   } catch (error) {
     console.error('Failed to refresh credentials:', error)
   }
@@ -1519,6 +1572,7 @@ const handleRecoverState = async (a: Account) => {
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
     refreshStatusSummarySilently()
+    refreshRiskOverviewSilently()
     appStore.showSuccess(t('admin.accounts.recoverStateSuccess'))
   } catch (error: any) {
     console.error('Failed to recover account state:', error)
@@ -1531,6 +1585,7 @@ const handleResetQuota = async (a: Account) => {
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
     refreshStatusSummarySilently()
+    refreshRiskOverviewSilently()
     appStore.showSuccess(t('common.success'))
   } catch (error) {
     console.error('Failed to reset quota:', error)
@@ -1542,6 +1597,7 @@ const handleSetPrivacy = async (a: Account) => {
     patchAccountInList(updated)
     enterAutoRefreshSilentWindow()
     refreshStatusSummarySilently()
+    refreshRiskOverviewSilently()
     appStore.showSuccess(t('common.success'))
   } catch (error: any) {
     console.error('Failed to set privacy:', error)
@@ -1558,6 +1614,7 @@ const handleToggleSchedulable = async (a: Account) => {
     updateSchedulableInList([a.id], updated?.schedulable ?? nextSchedulable)
     enterAutoRefreshSilentWindow()
     refreshStatusSummarySilently()
+    refreshRiskOverviewSilently()
   } catch (error) {
     console.error('Failed to toggle schedulable:', error)
     appStore.showError(t('admin.accounts.failedToToggleSchedulable'))
@@ -1572,6 +1629,7 @@ const handleTempUnschedReset = async (updated: Account) => {
   patchAccountInList(updated)
   enterAutoRefreshSilentWindow()
   refreshStatusSummarySilently()
+  refreshRiskOverviewSilently()
 }
 const formatExpiresAt = (value: number | null) => {
   if (!value) return '-'

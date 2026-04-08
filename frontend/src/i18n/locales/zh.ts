@@ -2012,6 +2012,56 @@ export default {
     accounts: {
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
+      riskOverview: {
+        eyebrow: 'WINDOW RISK',
+        title: '限流风险与恢复视图',
+        description: '按每个账号当前最危险的 5h/7d 窗口聚合，避免把“看起来 active”的账号误判成真实安全容量。',
+        coverage: '已纳入 {charted} / {supported} 个支持账号',
+        excluded: '非窗口账号 {count}',
+        unknown: '缺少窗口数据 {count}',
+        footnote: '仅统计启用中的 OpenAI OAuth 与 Anthropic OAuth/Setup Token 账号。图表只反映窗口限流风险，不包含 error / inactive / overload 等其他不可用原因。',
+        summary: {
+          charted: '已纳入',
+          highRisk: '高风险',
+          rateLimited: '已限流',
+          notIncluded: '未纳入'
+        },
+        series: {
+          accounts: '账号数',
+          recovery: '本桶恢复',
+          cumulative: '累计恢复'
+        },
+        riskChartTitle: '当前风险分布',
+        riskChartDescription: '每个账号只计入一次，取当前利用率最高的窗口作为主导窗口。',
+        recoveryChartTitle: '恢复时间分布',
+        recoveryChartDescription: '仅统计当前处于 80%+ 或已限流状态的账号，观察接下来会有多少风险压力自然释放。',
+        noSupportedTitle: '当前筛选范围没有可用窗口账号',
+        noSupportedDescription: '请切换到 OpenAI OAuth 或 Anthropic OAuth/Setup Token 账号范围，再查看 5h/7d 风险图。',
+        noChartedTitle: '当前暂无可判定窗口数据',
+        noChartedDescription: '这些账号虽然支持 5h/7d 语义，但当前没有可用的窗口快照，因此不会被算入安全桶。',
+        noRecoveryTitle: '当前没有待恢复的高风险账号',
+        noRecoveryDescription: '当 80%+ 或已限流账号出现后，这里会按预计重置时间展示恢复节奏。',
+        buckets: {
+          below_50: '<50%',
+          50_60: '50%-60%',
+          60_70: '60%-70%',
+          70_80: '70%-80%',
+          80_90: '80%-90%',
+          90_100: '90%-100%',
+          rate_limited: '已限流'
+        },
+        recoveryBuckets: {
+          under_30m: '≤30 分钟',
+          under_1h: '30-60 分钟',
+          under_3h: '1-3 小时',
+          under_6h: '3-6 小时',
+          under_12h: '6-12 小时',
+          under_24h: '12-24 小时',
+          under_3d: '1-3 天',
+          under_7d: '3-7 天',
+          over_7d: '>7 天'
+        }
+      },
       createAccount: '添加账号',
       autoRefresh: '自动刷新',
       enableAutoRefresh: '启用自动刷新',
