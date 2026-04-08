@@ -296,9 +296,9 @@ func TestOpenAIGatewayService_Forward_OAuthUsesHeaderSessionAsPromptCacheKey(t *
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "sess-header-only", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
 
-	isolated := isolateOpenAISessionID(42, "sess-header-only")
-	require.Equal(t, isolated, upstream.lastReq.Header.Get("session_id"))
-	require.Equal(t, isolated, upstream.lastReq.Header.Get("conversation_id"))
+	expectedSessionUUID := generateSessionUUID(isolateOpenAISessionID(42, "sess-header-only"))
+	require.Equal(t, expectedSessionUUID, upstream.lastReq.Header.Get("session_id"))
+	require.Equal(t, expectedSessionUUID, upstream.lastReq.Header.Get("conversation_id"))
 }
 
 func TestOpenAIGatewayService_Forward_OAuthHeaderSessionOverridesBodyPromptCacheKey(t *testing.T) {
@@ -333,9 +333,9 @@ func TestOpenAIGatewayService_Forward_OAuthHeaderSessionOverridesBodyPromptCache
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "header-key", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
 
-	isolated := isolateOpenAISessionID(7, "header-key")
-	require.Equal(t, isolated, upstream.lastReq.Header.Get("session_id"))
-	require.Equal(t, isolated, upstream.lastReq.Header.Get("conversation_id"))
+	expectedSessionUUID := generateSessionUUID(isolateOpenAISessionID(7, "header-key"))
+	require.Equal(t, expectedSessionUUID, upstream.lastReq.Header.Get("session_id"))
+	require.Equal(t, expectedSessionUUID, upstream.lastReq.Header.Get("conversation_id"))
 }
 
 func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
