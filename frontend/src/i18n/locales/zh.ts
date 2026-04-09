@@ -2062,6 +2062,10 @@ export default {
           over_7d: '>7 天'
         }
       },
+      tabs: {
+        list: '列表',
+        stats: '统计'
+      },
       createAccount: '添加账号',
       autoRefresh: '自动刷新',
       enableAutoRefresh: '启用自动刷新',

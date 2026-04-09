@@ -1983,6 +1983,10 @@ export default {
           over_7d: '>7d'
         }
       },
+      tabs: {
+        list: 'List',
+        stats: 'Stats'
+      },
       createAccount: 'Create Account',
       autoRefresh: 'Auto Refresh',
       enableAutoRefresh: 'Enable auto refresh',

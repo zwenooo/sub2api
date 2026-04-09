@@ -185,12 +185,41 @@
         </div>
       </template>
       <template #table>
-        <div class="mb-4">
-          <AccountRiskOverviewPanel
-            :overview="riskOverview"
-            :loading="riskOverviewLoading"
-          />
+        <!-- 列表/统计 tab 切换：默认展示列表，避免风险概览面板挤占表格行 -->
+        <div class="mb-4 inline-flex items-center gap-1 rounded-2xl bg-slate-100 p-1 dark:bg-dark-800">
+          <button
+            type="button"
+            @click="setAccountTab('list')"
+            :class="[
+              'rounded-xl px-4 py-1.5 text-sm font-medium transition-colors',
+              activeAccountTab === 'list'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-dark-700 dark:text-white'
+                : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+            ]"
+          >
+            {{ t('admin.accounts.tabs.list') }}
+          </button>
+          <button
+            type="button"
+            @click="setAccountTab('stats')"
+            :class="[
+              'rounded-xl px-4 py-1.5 text-sm font-medium transition-colors',
+              activeAccountTab === 'stats'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-dark-700 dark:text-white'
+                : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+            ]"
+          >
+            {{ t('admin.accounts.tabs.stats') }}
+          </button>
         </div>
+
+        <AccountRiskOverviewPanel
+          v-if="activeAccountTab === 'stats'"
+          :overview="riskOverview"
+          :loading="riskOverviewLoading"
+        />
+
+        <template v-else>
         <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @refresh-pending-openai="handleBatchRefreshPendingOpenAI" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
@@ -327,8 +356,9 @@
           </template>
         </DataTable>
         </div>
+        </template>
       </template>
-      <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
+      <template #pagination><Pagination v-if="activeAccountTab === 'list' && pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
     </TablePageLayout>
     <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
@@ -518,6 +548,32 @@ const riskOverview = ref<AdminAccountRiskOverview | null>(null)
 const riskOverviewLoading = ref(false)
 const riskOverviewReqSeq = ref(0)
 const pendingRiskOverviewRefresh = ref(false)
+
+// 列表 / 统计 tab 切换。统计 tab 会让风险概览面板独占显示区域，
+// 而不是叠在表格上方挤掉行高。状态持久化到 localStorage 以记住用户偏好。
+type AccountTab = 'list' | 'stats'
+const ACCOUNT_TAB_STORAGE_KEY = 'admin.accounts.activeTab'
+const activeAccountTab = ref<AccountTab>('list')
+
+onMounted(() => {
+  try {
+    const stored = localStorage.getItem(ACCOUNT_TAB_STORAGE_KEY)
+    if (stored === 'list' || stored === 'stats') {
+      activeAccountTab.value = stored
+    }
+  } catch {
+    // localStorage 不可用（隐私模式）→ 沉默回退到默认 list
+  }
+})
+
+const setAccountTab = (tab: AccountTab) => {
+  activeAccountTab.value = tab
+  try {
+    localStorage.setItem(ACCOUNT_TAB_STORAGE_KEY, tab)
+  } catch {
+    // ignore
+  }
+}
 
 const accountRuleDraftSource = computed<'request-error' | 'upstream-error' | null>(() => {
   const raw = route.query.rule_draft_source
