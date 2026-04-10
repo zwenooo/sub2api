@@ -99,3 +99,35 @@ func (a *Account) modelRateLimitResetAt(scope string) *time.Time {
 	}
 	return &resetAt
 }
+
+func (a *Account) HasAnyActiveModelRateLimitAt(now time.Time) bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	rawLimits, ok := a.Extra[modelRateLimitsKey].(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, rawLimit := range rawLimits {
+		limitMap, ok := rawLimit.(map[string]any)
+		if !ok {
+			continue
+		}
+		resetAtRaw, ok := limitMap["rate_limit_reset_at"].(string)
+		if !ok || strings.TrimSpace(resetAtRaw) == "" {
+			continue
+		}
+		resetAt, err := time.Parse(time.RFC3339, resetAtRaw)
+		if err != nil {
+			continue
+		}
+		if now.Before(resetAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Account) HasAnyActiveModelRateLimit() bool {
+	return a.HasAnyActiveModelRateLimitAt(time.Now())
+}

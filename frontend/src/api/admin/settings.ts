@@ -294,6 +294,8 @@ export interface OpenAIRateLimitRecoverySettings {
   enabled: boolean
   test_model: string
   check_interval_minutes: number
+  target_statuses: string[]
+  auto_recover: boolean
 }
 
 /**

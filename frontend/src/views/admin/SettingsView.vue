@@ -467,6 +467,46 @@
                     {{ t('admin.settings.openAIRateLimitRecovery.checkIntervalMinutesHint') }}
                   </p>
                 </div>
+
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.openAIRateLimitRecovery.targetStatuses') }}
+                  </label>
+                  <div class="grid gap-2 sm:grid-cols-2">
+                    <label
+                      v-for="item in openAIProbeTargetStatusOptions"
+                      :key="item.value"
+                      class="flex items-center gap-2 rounded border border-gray-200 px-3 py-2 text-sm text-gray-700 dark:border-dark-600 dark:text-gray-200"
+                    >
+                      <input
+                        type="checkbox"
+                        class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                        :checked="openAIRateLimitRecoveryForm.target_statuses.includes(item.value)"
+                        :disabled="openAIRateLimitRecoveryControlsDisabled"
+                        @change="handleOpenAIProbeTargetStatusChange(item.value, $event)"
+                      />
+                      <span>{{ item.label }}</span>
+                    </label>
+                  </div>
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openAIRateLimitRecovery.targetStatusesHint') }}
+                  </p>
+                </div>
+
+                <div class="flex items-center justify-between rounded border border-gray-100 px-4 py-3 dark:border-dark-700">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">{{
+                      t('admin.settings.openAIRateLimitRecovery.autoRecover')
+                    }}</label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.openAIRateLimitRecovery.autoRecoverHint') }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="openAIRateLimitRecoveryForm.auto_recover"
+                    :disabled="openAIRateLimitRecoveryControlsDisabled"
+                  />
+                </div>
               </div>
 
               <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
@@ -2136,6 +2176,7 @@ const adminSettingsStore = useAdminSettingsStore()
 
 type SettingsTab = 'general' | 'security' | 'users' | 'gateway' | 'email' | 'backup' | 'data'
 const activeTab = ref<SettingsTab>('general')
+const OPENAI_PROBE_TARGET_STATUS_ORDER = ['active', 'rate_limited', 'error', 'inactive', 'temp_unschedulable'] as const
 const settingsTabs = [
   { key: 'general'  as SettingsTab, icon: 'home'   as const },
   { key: 'security' as SettingsTab, icon: 'shield' as const },
@@ -2191,7 +2232,9 @@ const openAIRateLimitRecoveryLoadFailed = ref(false)
 const openAIRateLimitRecoveryForm = reactive<OpenAIRateLimitRecoverySettings>({
   enabled: false,
   test_model: 'gpt-5.1-codex',
-  check_interval_minutes: 10
+  check_interval_minutes: 10,
+  target_statuses: ['rate_limited'],
+  auto_recover: true
 })
 const openAIRateLimitRecoveryControlsDisabled = computed(
   () =>
@@ -2199,6 +2242,26 @@ const openAIRateLimitRecoveryControlsDisabled = computed(
     openAIRateLimitRecoverySaving.value ||
     openAIRateLimitRecoveryLoadFailed.value
 )
+const openAIProbeTargetStatusOptions = computed(() => [
+  { value: 'active', label: t('admin.accounts.status.active') },
+  { value: 'rate_limited', label: t('admin.accounts.status.rateLimited') },
+  { value: 'error', label: t('admin.accounts.status.error') },
+  { value: 'inactive', label: t('admin.accounts.status.inactive') },
+  { value: 'temp_unschedulable', label: t('admin.accounts.status.tempUnschedulable') }
+])
+
+function normalizeOpenAIProbeTargetStatuses(statuses?: string[] | null): string[] {
+  const selected = new Set((Array.isArray(statuses) ? statuses : []).map(status => String(status || '').trim()))
+  return OPENAI_PROBE_TARGET_STATUS_ORDER.filter(status => selected.has(status))
+}
+
+function handleOpenAIProbeTargetStatusChange(status: string, event: Event) {
+  const checked = (event.target as HTMLInputElement | null)?.checked === true
+  const next = new Set(normalizeOpenAIProbeTargetStatuses(openAIRateLimitRecoveryForm.target_statuses))
+  if (checked) next.add(status)
+  else next.delete(status)
+  openAIRateLimitRecoveryForm.target_statuses = OPENAI_PROBE_TARGET_STATUS_ORDER.filter(item => next.has(item))
+}
 
 // Rectifier 状态
 const rectifierLoading = ref(true)
@@ -2824,6 +2887,7 @@ async function loadOpenAIRateLimitRecoverySettings() {
   try {
     const settings = await adminAPI.settings.getOpenAIRateLimitRecoverySettings()
     Object.assign(openAIRateLimitRecoveryForm, settings)
+    openAIRateLimitRecoveryForm.target_statuses = normalizeOpenAIProbeTargetStatuses(settings.target_statuses)
   } catch (error: any) {
     openAIRateLimitRecoveryLoadFailed.value = true
     console.error('Failed to load OpenAI rate limit recovery settings:', error)
@@ -2842,6 +2906,7 @@ async function saveOpenAIRateLimitRecoverySettings() {
 
   const testModel = openAIRateLimitRecoveryForm.test_model.trim()
   const interval = Math.floor(Number(openAIRateLimitRecoveryForm.check_interval_minutes))
+  const targetStatuses = normalizeOpenAIProbeTargetStatuses(openAIRateLimitRecoveryForm.target_statuses)
 
   if (!testModel) {
     appStore.showError(t('admin.settings.openAIRateLimitRecovery.testModelRequired'))
@@ -2851,13 +2916,19 @@ async function saveOpenAIRateLimitRecoverySettings() {
     appStore.showError(t('admin.settings.openAIRateLimitRecovery.checkIntervalMinutesInvalid'))
     return
   }
+  if (targetStatuses.length === 0) {
+    appStore.showError(t('admin.settings.openAIRateLimitRecovery.targetStatusesRequired'))
+    return
+  }
 
   openAIRateLimitRecoverySaving.value = true
   try {
     const updated = await adminAPI.settings.updateOpenAIRateLimitRecoverySettings({
       enabled: openAIRateLimitRecoveryForm.enabled,
       test_model: testModel,
-      check_interval_minutes: interval
+      check_interval_minutes: interval,
+      target_statuses: targetStatuses,
+      auto_recover: openAIRateLimitRecoveryForm.auto_recover
     })
     Object.assign(openAIRateLimitRecoveryForm, updated)
     appStore.showSuccess(t('admin.settings.openAIRateLimitRecovery.saved'))

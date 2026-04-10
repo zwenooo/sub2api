@@ -4709,19 +4709,24 @@ export default {
         saveFailed: 'Failed to save stream timeout settings'
       },
       openAIRateLimitRecovery: {
-        title: 'OpenAI Rate Limit Recovery',
-        description: 'OpenAI platform only. When an account enters rate-limited state because of a real 429, the system periodically runs an upstream self-test and clears the rate limit as soon as the test succeeds.',
-        enabled: 'Enable Automatic Recovery Checks',
-        enabledHint: 'Periodically re-test rate-limited OpenAI accounts and return them to scheduling when the upstream test succeeds',
+        title: 'OpenAI Auto Probe',
+        description: 'OpenAI platform only. Periodically run the same real upstream probe used by the account-level "Test Connection" action for selected account statuses, and persist the probe result back into account state.',
+        enabled: 'Enable Auto Probe',
+        enabledHint: 'Run a real probe round for OpenAI accounts that match the selected statuses',
         testModel: 'Test Model',
         testModelPlaceholder: 'For example: gpt-5.1-codex',
-        testModelHint: 'All OpenAI rate-limited accounts share this default test model',
+        testModelHint: 'All auto-probed OpenAI accounts share this default test model',
         testModelRequired: 'Test model is required',
         checkIntervalMinutes: 'Check Interval (minutes)',
-        checkIntervalMinutesHint: 'How often to run a recovery round for currently rate-limited OpenAI accounts. Range: 1-1440 minutes',
+        checkIntervalMinutesHint: 'How often to run a probe round for matching OpenAI accounts. Range: 1-1440 minutes',
         checkIntervalMinutesInvalid: 'Check interval must be between 1 and 1440 minutes',
-        saved: 'OpenAI rate limit recovery settings saved',
-        saveFailed: 'Failed to save OpenAI rate limit recovery settings'
+        targetStatuses: 'Account Statuses To Probe',
+        targetStatusesHint: 'Only OpenAI accounts matching these statuses will be included in auto probe rounds',
+        targetStatusesRequired: 'Select at least one account status for auto probe',
+        autoRecover: 'Auto Recover After Success',
+        autoRecoverHint: 'When enabled, a successful probe clears recoverable runtime state such as error, rate limit, and temporary unschedulable flags',
+        saved: 'OpenAI auto probe settings saved',
+        saveFailed: 'Failed to save OpenAI auto probe settings'
       },
       rectifier: {
         title: 'Request Rectifier',

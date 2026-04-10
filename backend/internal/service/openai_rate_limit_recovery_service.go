@@ -18,8 +18,8 @@ const (
 	openAIRateLimitRecoveryRoundTimeout   = 15 * time.Minute
 )
 
-// OpenAIRateLimitRecoveryService periodically re-tests rate-limited OpenAI accounts
-// and clears their runtime rate-limit state once a real upstream test succeeds.
+// OpenAIRateLimitRecoveryService periodically probes selected OpenAI accounts
+// and optionally clears recoverable runtime state after a successful upstream test.
 type OpenAIRateLimitRecoveryService struct {
 	accountRepo    AccountRepository
 	accountTest    *AccountTestService
@@ -128,7 +128,17 @@ func (s *OpenAIRateLimitRecoveryService) tick() {
 }
 
 func (s *OpenAIRateLimitRecoveryService) runRecoveryRound(ctx context.Context, now time.Time, settings *OpenAIRateLimitRecoverySettings) {
-	accounts, err := s.listRecoverableAccounts(ctx, now)
+	targetStatusesInput := settings.TargetStatuses
+	if targetStatusesInput == nil {
+		targetStatusesInput = append([]string(nil), DefaultOpenAIRateLimitRecoverySettings().TargetStatuses...)
+	}
+	targetStatuses, err := normalizeOpenAIProbeTargetStatuses(targetStatusesInput)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] invalid target statuses: %v", err)
+		return
+	}
+
+	accounts, err := s.listRecoverableAccounts(ctx, now, targetStatuses)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -142,16 +152,18 @@ func (s *OpenAIRateLimitRecoveryService) runRecoveryRound(ctx context.Context, n
 
 	logger.LegacyPrintf(
 		"service.openai_rate_limit_recovery",
-		"[OpenAIRateLimitRecovery] round start accounts=%d model=%s interval=%dm",
+		"[OpenAIRateLimitRecovery] round start accounts=%d model=%s interval=%dm statuses=%v auto_recover=%t",
 		len(accounts),
 		settings.TestModel,
 		settings.CheckIntervalMinutes,
+		targetStatuses,
+		settings.AutoRecover,
 	)
 
 	sem := make(chan struct{}, openAIRateLimitRecoveryMaxWorkers)
 	var wg sync.WaitGroup
 	var successCount atomic.Int64
-	var clearedCount atomic.Int64
+	var recoveredCount atomic.Int64
 	var failedCount atomic.Int64
 
 	for i := range accounts {
@@ -167,9 +179,12 @@ func (s *OpenAIRateLimitRecoveryService) runRecoveryRound(ctx context.Context, n
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			if s.runRecoveryCheck(ctx, &acc, settings.TestModel) {
+			success, recovered := s.runRecoveryCheck(ctx, &acc, settings.TestModel, settings.AutoRecover)
+			if success {
 				successCount.Add(1)
-				clearedCount.Add(1)
+				if recovered {
+					recoveredCount.Add(1)
+				}
 				return
 			}
 			failedCount.Add(1)
@@ -180,14 +195,15 @@ func (s *OpenAIRateLimitRecoveryService) runRecoveryRound(ctx context.Context, n
 
 	logger.LegacyPrintf(
 		"service.openai_rate_limit_recovery",
-		"[OpenAIRateLimitRecovery] round finished accounts=%d cleared=%d failed=%d",
+		"[OpenAIRateLimitRecovery] round finished accounts=%d success=%d recovered=%d failed=%d",
 		len(accounts),
-		clearedCount.Load(),
+		successCount.Load(),
+		recoveredCount.Load(),
 		failedCount.Load(),
 	)
 }
 
-func (s *OpenAIRateLimitRecoveryService) listRecoverableAccounts(ctx context.Context, now time.Time) ([]Account, error) {
+func (s *OpenAIRateLimitRecoveryService) listRecoverableAccounts(ctx context.Context, now time.Time, targetStatuses []string) ([]Account, error) {
 	accounts := make([]Account, 0)
 	for page := 1; ; page++ {
 		items, _, err := s.accountRepo.ListWithFilters(
@@ -195,7 +211,7 @@ func (s *OpenAIRateLimitRecoveryService) listRecoverableAccounts(ctx context.Con
 			pagination.PaginationParams{Page: page, PageSize: openAIRateLimitRecoveryPageSize},
 			PlatformOpenAI,
 			"",
-			"rate_limited",
+			"",
 			"",
 			0,
 			"",
@@ -209,13 +225,7 @@ func (s *OpenAIRateLimitRecoveryService) listRecoverableAccounts(ctx context.Con
 
 		for i := range items {
 			account := items[i]
-			if !account.IsActive() || !account.Schedulable {
-				continue
-			}
-			if !account.IsOpenAIOAuth() {
-				continue
-			}
-			if account.RateLimitResetAt == nil || !now.Before(*account.RateLimitResetAt) {
+			if !accountMatchesOpenAIProbeTargetStatuses(&account, targetStatuses, now) {
 				continue
 			}
 			accounts = append(accounts, account)
@@ -229,12 +239,12 @@ func (s *OpenAIRateLimitRecoveryService) listRecoverableAccounts(ctx context.Con
 	return accounts, nil
 }
 
-func (s *OpenAIRateLimitRecoveryService) runRecoveryCheck(parent context.Context, account *Account, testModel string) bool {
+func (s *OpenAIRateLimitRecoveryService) runRecoveryCheck(parent context.Context, account *Account, testModel string, autoRecover bool) (bool, bool) {
 	if s == nil || account == nil {
-		return false
+		return false, false
 	}
 	if parent.Err() != nil {
-		return false
+		return false, false
 	}
 
 	ctx, cancel := context.WithTimeout(parent, openAIRateLimitRecoveryAccountTimeout)
@@ -243,22 +253,76 @@ func (s *OpenAIRateLimitRecoveryService) runRecoveryCheck(parent context.Context
 	result, err := s.accountTest.RunTestBackground(ctx, account.ID, testModel)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] account=%d test failed: %v", account.ID, err)
-		return false
+		return false, false
 	}
 	if result == nil || result.Status != "success" {
 		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] account=%d test unsuccessful: status=%s err=%s", account.ID, safeScheduledTestStatus(result), safeScheduledTestError(result))
-		return false
+		return false, false
+	}
+	if !autoRecover {
+		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] account=%d probe succeeded without auto recovery", account.ID)
+		return true, false
 	}
 
 	recovery, err := s.rateLimitSvc.RecoverAccountAfterSuccessfulTest(ctx, account.ID)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] account=%d clear state failed: %v", account.ID, err)
-		return false
+		return true, false
 	}
 
-	logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] account=%d cleared rate limit after successful self-test", account.ID)
+	logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] account=%d cleared recoverable runtime state after successful probe", account.ID)
 	_ = recovery
-	return true
+	return true, true
+}
+
+func accountMatchesOpenAIProbeTargetStatuses(account *Account, targetStatuses []string, now time.Time) bool {
+	if account == nil {
+		return false
+	}
+	for _, status := range targetStatuses {
+		if accountMatchesOpenAIProbeStatus(account, status, now) {
+			return true
+		}
+	}
+	return false
+}
+
+func accountMatchesOpenAIProbeStatus(account *Account, status string, now time.Time) bool {
+	if account == nil {
+		return false
+	}
+	switch status {
+	case StatusActive:
+		if account.Status != StatusActive || !account.Schedulable {
+			return false
+		}
+		if account.AutoPauseOnExpired && account.ExpiresAt != nil && !now.Before(*account.ExpiresAt) {
+			return false
+		}
+		if account.OverloadUntil != nil && now.Before(*account.OverloadUntil) {
+			return false
+		}
+		if account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil) {
+			return false
+		}
+		return !accountHasActiveRuntimeRateLimit(account, now)
+	case "rate_limited":
+		return accountHasActiveRuntimeRateLimit(account, now)
+	case "temp_unschedulable":
+		return account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil)
+	default:
+		return account.Status == status
+	}
+}
+
+func accountHasActiveRuntimeRateLimit(account *Account, now time.Time) bool {
+	if account == nil {
+		return false
+	}
+	if account.RateLimitResetAt != nil && now.Before(*account.RateLimitResetAt) {
+		return true
+	}
+	return account.HasAnyActiveModelRateLimitAt(now)
 }
 
 func safeScheduledTestStatus(result *ScheduledTestResult) string {

@@ -247,11 +247,21 @@ type OpenAIAutoDisableSettings struct {
 	Rules   []OpenAIAutoDisableRule `json:"rules"`
 }
 
-// OpenAIRateLimitRecoverySettings OpenAI 限流恢复自测配置。
+// OpenAIRateLimitRecoverySettings OpenAI 自动探测配置。
 type OpenAIRateLimitRecoverySettings struct {
-	Enabled              bool   `json:"enabled"`
-	TestModel            string `json:"test_model"`
-	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+	Enabled              bool     `json:"enabled"`
+	TestModel            string   `json:"test_model"`
+	CheckIntervalMinutes int      `json:"check_interval_minutes"`
+	TargetStatuses       []string `json:"target_statuses"`
+	AutoRecover          bool     `json:"auto_recover"`
+}
+
+var openAIProbeTargetStatusOrder = []string{
+	StatusActive,
+	"rate_limited",
+	StatusError,
+	StatusDisabled,
+	"temp_unschedulable",
 }
 
 // DefaultOpenAIAutoDisableSettings 返回默认的 OpenAI 自动禁用规则配置。
@@ -262,12 +272,14 @@ func DefaultOpenAIAutoDisableSettings() *OpenAIAutoDisableSettings {
 	}
 }
 
-// DefaultOpenAIRateLimitRecoverySettings 返回默认的 OpenAI 限流恢复自测配置。
+// DefaultOpenAIRateLimitRecoverySettings 返回默认的 OpenAI 自动探测配置。
 func DefaultOpenAIRateLimitRecoverySettings() *OpenAIRateLimitRecoverySettings {
 	return &OpenAIRateLimitRecoverySettings{
 		Enabled:              false,
 		TestModel:            openai.DefaultTestModel,
 		CheckIntervalMinutes: 10,
+		TargetStatuses:       []string{"rate_limited"},
+		AutoRecover:          true,
 	}
 }
 

@@ -1592,7 +1592,7 @@ func (s *SettingService) SetOpenAIAutoDisableSettings(ctx context.Context, setti
 	return s.settingRepo.Set(ctx, SettingKeyOpenAIAutoDisableSettings, string(data))
 }
 
-// GetOpenAIRateLimitRecoverySettings 获取 OpenAI 限流恢复自测配置。
+// GetOpenAIRateLimitRecoverySettings 获取 OpenAI 自动探测配置。
 func (s *SettingService) GetOpenAIRateLimitRecoverySettings(ctx context.Context) (*OpenAIRateLimitRecoverySettings, error) {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAIRateLimitRecoverySettings)
 	if err != nil {
@@ -1605,19 +1605,39 @@ func (s *SettingService) GetOpenAIRateLimitRecoverySettings(ctx context.Context)
 		return DefaultOpenAIRateLimitRecoverySettings(), nil
 	}
 
-	var settings OpenAIRateLimitRecoverySettings
-	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+	type storedOpenAIRateLimitRecoverySettings struct {
+		Enabled              bool     `json:"enabled"`
+		TestModel            string   `json:"test_model"`
+		CheckIntervalMinutes int      `json:"check_interval_minutes"`
+		TargetStatuses       []string `json:"target_statuses"`
+		AutoRecover          *bool    `json:"auto_recover"`
+	}
+
+	var stored storedOpenAIRateLimitRecoverySettings
+	if err := json.Unmarshal([]byte(value), &stored); err != nil {
 		return DefaultOpenAIRateLimitRecoverySettings(), nil
 	}
 
-	normalized, err := normalizeOpenAIRateLimitRecoverySettings(&settings)
+	settings := &OpenAIRateLimitRecoverySettings{
+		Enabled:              stored.Enabled,
+		TestModel:            stored.TestModel,
+		CheckIntervalMinutes: stored.CheckIntervalMinutes,
+		AutoRecover:          stored.AutoRecover == nil || *stored.AutoRecover,
+	}
+	if stored.TargetStatuses == nil {
+		settings.TargetStatuses = append([]string(nil), DefaultOpenAIRateLimitRecoverySettings().TargetStatuses...)
+	} else {
+		settings.TargetStatuses = stored.TargetStatuses
+	}
+
+	normalized, err := normalizeOpenAIRateLimitRecoverySettings(settings)
 	if err != nil {
 		return DefaultOpenAIRateLimitRecoverySettings(), nil
 	}
 	return normalized, nil
 }
 
-// SetOpenAIRateLimitRecoverySettings 设置 OpenAI 限流恢复自测配置。
+// SetOpenAIRateLimitRecoverySettings 设置 OpenAI 自动探测配置。
 func (s *SettingService) SetOpenAIRateLimitRecoverySettings(ctx context.Context, settings *OpenAIRateLimitRecoverySettings) error {
 	normalized, err := normalizeOpenAIRateLimitRecoverySettings(settings)
 	if err != nil {
@@ -1694,7 +1714,16 @@ func normalizeOpenAIRateLimitRecoverySettings(settings *OpenAIRateLimitRecoveryS
 		Enabled:              settings.Enabled,
 		TestModel:            strings.TrimSpace(settings.TestModel),
 		CheckIntervalMinutes: settings.CheckIntervalMinutes,
+		AutoRecover:          settings.AutoRecover,
 	}
+	if settings.TargetStatuses == nil {
+		return nil, fmt.Errorf("target_statuses is required")
+	}
+	targetStatuses, err := normalizeOpenAIProbeTargetStatuses(settings.TargetStatuses)
+	if err != nil {
+		return nil, err
+	}
+	normalized.TargetStatuses = targetStatuses
 
 	if normalized.TestModel == "" {
 		return nil, fmt.Errorf("test_model cannot be empty")
@@ -1703,6 +1732,33 @@ func normalizeOpenAIRateLimitRecoverySettings(settings *OpenAIRateLimitRecoveryS
 		return nil, fmt.Errorf("check_interval_minutes must be between 1 and 1440")
 	}
 
+	return normalized, nil
+}
+
+func normalizeOpenAIProbeTargetStatuses(statuses []string) ([]string, error) {
+	if len(statuses) == 0 {
+		return nil, fmt.Errorf("target_statuses must contain at least one valid status")
+	}
+
+	seen := make(map[string]struct{}, len(statuses))
+	normalized := make([]string, 0, len(openAIProbeTargetStatusOrder))
+	for _, allowedStatus := range openAIProbeTargetStatusOrder {
+		for _, rawStatus := range statuses {
+			status := strings.TrimSpace(rawStatus)
+			if status == "" || status != allowedStatus {
+				continue
+			}
+			if _, ok := seen[status]; ok {
+				break
+			}
+			seen[status] = struct{}{}
+			normalized = append(normalized, status)
+			break
+		}
+	}
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("target_statuses must contain at least one valid status")
+	}
 	return normalized, nil
 }
 

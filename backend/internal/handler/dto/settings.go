@@ -208,11 +208,13 @@ type BetaPolicySettings struct {
 	Rules []BetaPolicyRule `json:"rules"`
 }
 
-// OpenAIRateLimitRecoverySettings OpenAI 限流恢复自测配置 DTO
+// OpenAIRateLimitRecoverySettings OpenAI 自动探测配置 DTO
 type OpenAIRateLimitRecoverySettings struct {
-	Enabled              bool   `json:"enabled"`
-	TestModel            string `json:"test_model"`
-	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+	Enabled              bool     `json:"enabled"`
+	TestModel            string   `json:"test_model"`
+	CheckIntervalMinutes int      `json:"check_interval_minutes"`
+	TargetStatuses       []string `json:"target_statuses"`
+	AutoRecover          bool     `json:"auto_recover"`
 }
 
 // ParseCustomMenuItems parses a JSON string into a slice of CustomMenuItem.

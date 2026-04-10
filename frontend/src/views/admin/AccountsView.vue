@@ -1444,10 +1444,20 @@ const hasFutureTimestamp = (value?: string | null) => {
   const ts = new Date(value).getTime()
   return Number.isFinite(ts) && ts > Date.now()
 }
+const hasActiveModelRateLimit = (account: Account) => {
+  const modelLimits = account.extra?.model_rate_limits as
+    | Record<string, { rate_limit_reset_at?: string | null }>
+    | undefined
+  if (!modelLimits) return false
+  return Object.values(modelLimits).some(limit => hasFutureTimestamp(limit?.rate_limit_reset_at ?? null))
+}
+const isAccountRateLimited = (account: Account) => {
+  return hasFutureTimestamp(account.rate_limit_reset_at) || hasActiveModelRateLimit(account)
+}
 const isAccountInNormalStatus = (account: Account) => (
   account.status === 'active' &&
   account.schedulable &&
-  !hasFutureTimestamp(account.rate_limit_reset_at) &&
+  !isAccountRateLimited(account) &&
   !hasFutureTimestamp(account.overload_until) &&
   !hasFutureTimestamp(account.temp_unschedulable_until)
 )
@@ -1487,9 +1497,7 @@ const accountMatchesCurrentFilters = (account: Account) => {
     if (params.status === 'active') {
       if (!isAccountInNormalStatus(account)) return false
     } else if (params.status === 'rate_limited') {
-      if (!account.rate_limit_reset_at) return false
-      const resetAt = new Date(account.rate_limit_reset_at).getTime()
-      if (!Number.isFinite(resetAt) || resetAt <= Date.now()) return false
+      if (!isAccountRateLimited(account)) return false
     } else if (params.status === 'temp_unschedulable') {
       if (!hasFutureTimestamp(account.temp_unschedulable_until)) return false
     } else if (account.status !== params.status) {

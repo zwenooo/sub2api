@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -1501,6 +1502,21 @@ func notExpiredPredicate(now time.Time) dbpredicate.Account {
 	)
 }
 
+func activeModelRateLimitPredicate() dbpredicate.Account {
+	return dbpredicate.Account(func(s *entsql.Selector) {
+		extraCol := s.C(dbaccount.FieldExtra)
+		s.Where(entsql.ExprP(fmt.Sprintf(
+			`EXISTS (
+				SELECT 1
+				FROM jsonb_each(COALESCE(%s->'model_rate_limits', '{}'::jsonb)) AS model_limits(scope, payload)
+				WHERE NULLIF(payload->>'rate_limit_reset_at', '') IS NOT NULL
+				  AND (payload->>'rate_limit_reset_at')::timestamptz > NOW()
+			)`,
+			extraCol,
+		)))
+	})
+}
+
 func applyAccountListFilters(q *dbent.AccountQuery, platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
 	if platform != "" {
 		q = q.Where(dbaccount.PlatformEQ(platform))
@@ -1519,9 +1535,13 @@ func applyAccountListFilters(q *dbent.AccountQuery, platform, accountType, statu
 				notExpiredPredicate(now),
 				dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
 				dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+				dbaccount.Not(activeModelRateLimitPredicate()),
 			)
 		case "rate_limited":
-			q = q.Where(dbaccount.RateLimitResetAtGT(time.Now()))
+			q = q.Where(dbaccount.Or(
+				dbaccount.RateLimitResetAtGT(time.Now()),
+				activeModelRateLimitPredicate(),
+			))
 		case "temp_unschedulable":
 			q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
 				col := s.C("temp_unschedulable_until")

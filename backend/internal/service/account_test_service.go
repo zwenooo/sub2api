@@ -539,7 +539,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == http.StatusTooManyRequests && isOAuth && s.accountRepo != nil {
+		if resp.StatusCode == http.StatusTooManyRequests && s.accountRepo != nil {
 			resetAt := (&RateLimitService{}).calculateOpenAI429ResetTime(resp.Header)
 			if resetAt == nil {
 				if resetAtUnix := parseOpenAIRateLimitResetTime(body); resetAtUnix != nil {

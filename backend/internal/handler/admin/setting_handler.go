@@ -1780,7 +1780,7 @@ func (h *SettingHandler) UpdateStreamTimeoutSettings(c *gin.Context) {
 	})
 }
 
-// GetOpenAIRateLimitRecoverySettings 获取 OpenAI 限流恢复自测配置
+// GetOpenAIRateLimitRecoverySettings 获取 OpenAI 自动探测配置
 // GET /api/v1/admin/settings/openai-rate-limit-recovery
 func (h *SettingHandler) GetOpenAIRateLimitRecoverySettings(c *gin.Context) {
 	settings, err := h.settingService.GetOpenAIRateLimitRecoverySettings(c.Request.Context())
@@ -1793,17 +1793,21 @@ func (h *SettingHandler) GetOpenAIRateLimitRecoverySettings(c *gin.Context) {
 		Enabled:              settings.Enabled,
 		TestModel:            settings.TestModel,
 		CheckIntervalMinutes: settings.CheckIntervalMinutes,
+		TargetStatuses:       settings.TargetStatuses,
+		AutoRecover:          settings.AutoRecover,
 	})
 }
 
-// UpdateOpenAIRateLimitRecoverySettingsRequest 更新 OpenAI 限流恢复自测配置请求
+// UpdateOpenAIRateLimitRecoverySettingsRequest 更新 OpenAI 自动探测配置请求
 type UpdateOpenAIRateLimitRecoverySettingsRequest struct {
-	Enabled              bool   `json:"enabled"`
-	TestModel            string `json:"test_model"`
-	CheckIntervalMinutes int    `json:"check_interval_minutes"`
+	Enabled              bool     `json:"enabled"`
+	TestModel            string   `json:"test_model"`
+	CheckIntervalMinutes int      `json:"check_interval_minutes"`
+	TargetStatuses       []string `json:"target_statuses"`
+	AutoRecover          bool     `json:"auto_recover"`
 }
 
-// UpdateOpenAIRateLimitRecoverySettings 更新 OpenAI 限流恢复自测配置
+// UpdateOpenAIRateLimitRecoverySettings 更新 OpenAI 自动探测配置
 // PUT /api/v1/admin/settings/openai-rate-limit-recovery
 func (h *SettingHandler) UpdateOpenAIRateLimitRecoverySettings(c *gin.Context) {
 	var req UpdateOpenAIRateLimitRecoverySettingsRequest
@@ -1826,6 +1830,8 @@ func (h *SettingHandler) UpdateOpenAIRateLimitRecoverySettings(c *gin.Context) {
 		Enabled:              req.Enabled,
 		TestModel:            req.TestModel,
 		CheckIntervalMinutes: req.CheckIntervalMinutes,
+		TargetStatuses:       req.TargetStatuses,
+		AutoRecover:          req.AutoRecover,
 	}
 	if err := h.settingService.SetOpenAIRateLimitRecoverySettings(c.Request.Context(), settings); err != nil {
 		response.BadRequest(c, err.Error())
@@ -1842,5 +1848,7 @@ func (h *SettingHandler) UpdateOpenAIRateLimitRecoverySettings(c *gin.Context) {
 		Enabled:              updatedSettings.Enabled,
 		TestModel:            updatedSettings.TestModel,
 		CheckIntervalMinutes: updatedSettings.CheckIntervalMinutes,
+		TargetStatuses:       updatedSettings.TargetStatuses,
+		AutoRecover:          updatedSettings.AutoRecover,
 	})
 }

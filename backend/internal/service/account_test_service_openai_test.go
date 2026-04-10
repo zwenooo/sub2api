@@ -131,3 +131,30 @@ func TestAccountTestService_OpenAI429FallsBackToBodyResetAt(t *testing.T) {
 	require.NotNil(t, account.RateLimitResetAt)
 	require.WithinDuration(t, resetAt, *account.RateLimitResetAt, time.Second)
 }
+
+func TestAccountTestService_OpenAIAPIKey429PersistsRateLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newSoraTestContext()
+
+	resetAt := time.Now().Add(12 * time.Minute).UTC().Truncate(time.Second)
+	resp := newJSONResponse(http.StatusTooManyRequests, fmt.Sprintf(`{"error":{"type":"usage_limit_reached","message":"limit reached","resets_at":%d}}`, resetAt.Unix()))
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{
+		ID:          1024,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.Error(t, err)
+	require.Equal(t, int64(1024), repo.rateLimitedID)
+	require.NotNil(t, repo.rateLimitedAt)
+	require.WithinDuration(t, resetAt, *repo.rateLimitedAt, time.Second)
+	require.NotNil(t, account.RateLimitResetAt)
+	require.WithinDuration(t, resetAt, *account.RateLimitResetAt, time.Second)
+}

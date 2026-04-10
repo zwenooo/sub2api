@@ -121,3 +121,29 @@ func TestOpenAIRateLimitRecoveryService_StopCancelsActiveRecoveryWorkers(t *test
 		t.Fatal("Stop should return promptly after canceling active recovery workers")
 	}
 }
+
+func TestAccountMatchesOpenAIProbeStatus_RateLimitedIncludesModelRateLimits(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"model_rate_limits": map[string]any{
+				"gpt-5.1": map[string]any{
+					"rate_limit_reset_at": now.Add(20 * time.Minute).UTC().Format(time.RFC3339),
+				},
+			},
+		},
+	}
+
+	if !accountMatchesOpenAIProbeStatus(account, "rate_limited", now) {
+		t.Fatal("expected model-level rate limit to match rate_limited probe status")
+	}
+	if accountMatchesOpenAIProbeStatus(account, StatusActive, now) {
+		t.Fatal("expected model-level rate limit to exclude account from active probe status")
+	}
+}
