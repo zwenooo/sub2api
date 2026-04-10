@@ -470,7 +470,15 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 	accounts, err := q.
 		Offset(params.Offset()).
 		Limit(params.Limit()).
-		Order(dbent.Desc(dbaccount.FieldID)).
+		Order(func(s *entsql.Selector) {
+			rl := s.C(dbaccount.FieldRateLimitResetAt)
+			lu := s.C(dbaccount.FieldLastUsedAt)
+			// Rate-limited accounts (reset_at in the future) sink to the bottom.
+			s.OrderExpr(entsql.Expr("CASE WHEN " + rl + " IS NOT NULL AND " + rl + " > NOW() THEN 1 ELSE 0 END"))
+			// Most recently used accounts first; never-used accounts sink below active ones.
+			s.OrderExpr(entsql.Expr(lu + " DESC NULLS LAST"))
+			s.OrderBy(entsql.Desc(s.C(dbaccount.FieldID)))
+		}).
 		All(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -485,7 +493,13 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 
 func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {
 	accounts, err := applyAccountListFilters(r.client.Account.Query(), platform, accountType, status, search, groupID, privacyMode).
-		Order(dbent.Desc(dbaccount.FieldID)).
+		Order(func(s *entsql.Selector) {
+			rl := s.C(dbaccount.FieldRateLimitResetAt)
+			lu := s.C(dbaccount.FieldLastUsedAt)
+			s.OrderExpr(entsql.Expr("CASE WHEN " + rl + " IS NOT NULL AND " + rl + " > NOW() THEN 1 ELSE 0 END"))
+			s.OrderExpr(entsql.Expr(lu + " DESC NULLS LAST"))
+			s.OrderBy(entsql.Desc(s.C(dbaccount.FieldID)))
+		}).
 		All(ctx)
 	if err != nil {
 		return nil, err

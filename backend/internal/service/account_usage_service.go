@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math/rand/v2"
@@ -19,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/tidwall/gjson"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
@@ -523,6 +526,14 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	if s.usageLogRepo == nil {
+		// Even without DB, ensure FiveHour is always non-nil and include probe stats
+		if usage.FiveHour == nil {
+			usage.FiveHour = &UsageProgress{Utilization: 0}
+		}
+		if usage.FiveHour.WindowStats == nil {
+			usage.FiveHour.WindowStats = &WindowStats{}
+		}
+		mergeProbeStatsIntoWindowStats(account.Extra, usage.FiveHour.WindowStats, now)
 		return usage, nil
 	}
 
@@ -539,6 +550,17 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		}
 		usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
 	}
+
+	// Ensure FiveHour is always non-nil for OpenAI OAuth accounts.
+	// Prevents five_hour:null in JSON when the DB query fails, which would hide the 5h bar in the UI.
+	if usage.FiveHour == nil {
+		usage.FiveHour = &UsageProgress{Utilization: 0}
+	}
+	// Merge probe request/token counts into FiveHour window stats
+	if usage.FiveHour.WindowStats == nil {
+		usage.FiveHour.WindowStats = &WindowStats{}
+	}
+	mergeProbeStatsIntoWindowStats(account.Extra, usage.FiveHour.WindowStats, now)
 
 	return usage, nil
 }
@@ -646,10 +668,33 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// Extract snapshot from response headers (does not read body)
 	updates, resetAt, err := extractOpenAICodexProbeSnapshot(resp)
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Extract token usage from SSE response body (body still open at this point)
+	inputTokens, outputTokens := extractTokenUsageFromProbeBody(resp.Body)
+
+	// Build probe stats updates aligned to the 5h window.
+	// Use merged extra (current account state + new snapshot updates) so that the
+	// freshly-written codex_5h_reset_at is visible when computing the window key.
+	mergedExtra := make(map[string]any, len(account.Extra)+len(updates))
+	for k, v := range account.Extra {
+		mergedExtra[k] = v
+	}
+	for k, v := range updates {
+		mergedExtra[k] = v
+	}
+	probeStatsUpdates := buildProbeStatsExtraUpdates(mergedExtra, inputTokens, outputTokens)
+	if updates == nil {
+		updates = make(map[string]any)
+	}
+	for k, v := range probeStatsUpdates {
+		updates[k] = v
+	}
+
 	if len(updates) > 0 || resetAt != nil {
 		s.persistOpenAICodexProbeSnapshot(account.ID, updates, resetAt)
 		return updates, resetAt, nil
@@ -1402,4 +1447,94 @@ func buildGeminiUsageProgress(used, limit int64, resetAt time.Time, tokens int64
 // 用于账号列表页面显示当前窗口费用
 func (s *AccountUsageService) GetAccountWindowStats(ctx context.Context, accountID int64, startTime time.Time) (*usagestats.AccountStats, error) {
 	return s.usageLogRepo.GetAccountWindowStats(ctx, accountID, startTime)
+}
+
+// extractTokenUsageFromProbeBody reads the SSE response body of a Codex probe and returns
+// the input and output token counts found in the response.done / response.completed event.
+// The body is read up to 64 KB; if no usage event is found, both counts are 0.
+func extractTokenUsageFromProbeBody(body io.Reader) (inputTokens, outputTokens int) {
+	if body == nil {
+		return 0, 0
+	}
+	scanner := bufio.NewScanner(io.LimitReader(body, 64*1024))
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		data := bytes.TrimPrefix(line, []byte("data: "))
+		if bytes.Equal(data, []byte("[DONE]")) {
+			break
+		}
+		eventType := gjson.GetBytes(data, "type").String()
+		if eventType != "response.completed" && eventType != "response.done" {
+			continue
+		}
+		inputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens").Int())
+		outputTokens = int(gjson.GetBytes(data, "response.usage.output_tokens").Int())
+		return inputTokens, outputTokens
+	}
+	return 0, 0
+}
+
+// buildProbeStatsExtraUpdates returns extra field updates that accumulate probe
+// request and token counts within the current 5h Codex window.
+//
+// Window alignment: the stored key "codex_probe_window_ts" is compared against
+// the current "codex_5h_reset_at". When they differ the counters are reset,
+// meaning the 5h window has rotated since the last probe.
+//
+// If "codex_5h_reset_at" is absent the function returns nil (no windowing anchor).
+func buildProbeStatsExtraUpdates(currentExtra map[string]any, inputTokens, outputTokens int) map[string]any {
+	current5hResetAt := strings.TrimSpace(fmt.Sprint(currentExtra["codex_5h_reset_at"]))
+	if current5hResetAt == "" {
+		return nil
+	}
+
+	storedWindowTS := strings.TrimSpace(fmt.Sprint(currentExtra["codex_probe_window_ts"]))
+
+	var requests, inTokens, outTokens int64
+	if current5hResetAt == storedWindowTS {
+		// Same 5h window — accumulate existing counts
+		requests = int64(parseExtraInt(currentExtra["codex_probe_requests"]))
+		inTokens = int64(parseExtraInt(currentExtra["codex_probe_input_tokens"]))
+		outTokens = int64(parseExtraInt(currentExtra["codex_probe_output_tokens"]))
+	}
+	// else: window has rotated — start fresh from zero
+
+	requests++
+	inTokens += int64(inputTokens)
+	outTokens += int64(outputTokens)
+
+	return map[string]any{
+		"codex_probe_window_ts":     current5hResetAt,
+		"codex_probe_requests":      requests,
+		"codex_probe_input_tokens":  inTokens,
+		"codex_probe_output_tokens": outTokens,
+	}
+}
+
+// mergeProbeStatsIntoWindowStats adds probe request and token counts to ws.
+// Stats are only merged when "codex_probe_window_ts" matches the current
+// "codex_5h_reset_at" (i.e. same 5h window) and the window has not yet expired.
+func mergeProbeStatsIntoWindowStats(extra map[string]any, ws *WindowStats, now time.Time) {
+	if extra == nil || ws == nil {
+		return
+	}
+
+	current5hResetAt := strings.TrimSpace(fmt.Sprint(extra["codex_5h_reset_at"]))
+	storedWindowTS := strings.TrimSpace(fmt.Sprint(extra["codex_probe_window_ts"]))
+
+	if current5hResetAt == "" || current5hResetAt != storedWindowTS {
+		return
+	}
+
+	// Don't add stats from an already-expired window
+	if resetAt, err := parseTime(current5hResetAt); err == nil && now.After(resetAt) {
+		return
+	}
+
+	ws.Requests += int64(parseExtraInt(extra["codex_probe_requests"]))
+	ws.Tokens += int64(parseExtraInt(extra["codex_probe_input_tokens"])) +
+		int64(parseExtraInt(extra["codex_probe_output_tokens"]))
 }
