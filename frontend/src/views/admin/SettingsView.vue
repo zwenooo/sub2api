@@ -2176,7 +2176,7 @@ const adminSettingsStore = useAdminSettingsStore()
 
 type SettingsTab = 'general' | 'security' | 'users' | 'gateway' | 'email' | 'backup' | 'data'
 const activeTab = ref<SettingsTab>('general')
-const OPENAI_PROBE_TARGET_STATUS_ORDER = ['active', 'rate_limited', 'error', 'inactive', 'temp_unschedulable'] as const
+const OPENAI_PROBE_TARGET_STATUS_ORDER = ['active', 'rate_limited', 'error', 'disabled', 'temp_unschedulable'] as const
 const settingsTabs = [
   { key: 'general'  as SettingsTab, icon: 'home'   as const },
   { key: 'security' as SettingsTab, icon: 'shield' as const },
@@ -2246,12 +2246,17 @@ const openAIProbeTargetStatusOptions = computed(() => [
   { value: 'active', label: t('admin.accounts.status.active') },
   { value: 'rate_limited', label: t('admin.accounts.status.rateLimited') },
   { value: 'error', label: t('admin.accounts.status.error') },
-  { value: 'inactive', label: t('admin.accounts.status.inactive') },
+  { value: 'disabled', label: t('admin.accounts.status.inactive') },
   { value: 'temp_unschedulable', label: t('admin.accounts.status.tempUnschedulable') }
 ])
 
 function normalizeOpenAIProbeTargetStatuses(statuses?: string[] | null): string[] {
-  const selected = new Set((Array.isArray(statuses) ? statuses : []).map(status => String(status || '').trim()))
+  const selected = new Set(
+    (Array.isArray(statuses) ? statuses : []).map(status => {
+      const normalized = String(status || '').trim()
+      return normalized === 'inactive' ? 'disabled' : normalized
+    })
+  )
   return OPENAI_PROBE_TARGET_STATUS_ORDER.filter(status => selected.has(status))
 }
 

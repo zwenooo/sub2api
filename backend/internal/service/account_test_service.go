@@ -66,6 +66,7 @@ const (
 // AccountTestService handles account testing operations
 type AccountTestService struct {
 	accountRepo               AccountRepository
+	settingService            *SettingService
 	geminiTokenProvider       *GeminiTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
 	httpUpstream              HTTPUpstream
@@ -81,6 +82,7 @@ const defaultSoraTestCooldown = 10 * time.Second
 // NewAccountTestService creates a new AccountTestService
 func NewAccountTestService(
 	accountRepo AccountRepository,
+	settingService *SettingService,
 	geminiTokenProvider *GeminiTokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
 	httpUpstream HTTPUpstream,
@@ -89,6 +91,7 @@ func NewAccountTestService(
 ) *AccountTestService {
 	return &AccountTestService{
 		accountRepo:               accountRepo,
+		settingService:            settingService,
 		geminiTokenProvider:       geminiTokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
 		httpUpstream:              httpUpstream,
@@ -539,23 +542,17 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == http.StatusTooManyRequests && s.accountRepo != nil {
-			resetAt := (&RateLimitService{}).calculateOpenAI429ResetTime(resp.Header)
-			if resetAt == nil {
-				if resetAtUnix := parseOpenAIRateLimitResetTime(body); resetAtUnix != nil {
-					parsed := time.Unix(*resetAtUnix, 0).UTC()
-					resetAt = &parsed
-				}
+		if s.accountRepo != nil {
+			cfg := s.cfg
+			if cfg == nil {
+				cfg = &config.Config{}
 			}
-			if resetAt != nil {
-				_ = s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt)
-				account.RateLimitResetAt = resetAt
+			rateLimitSvc := &RateLimitService{
+				accountRepo:    s.accountRepo,
+				settingService: s.settingService,
+				cfg:            cfg,
 			}
-		}
-		// 401 Unauthorized: 标记账号为永久错误
-		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			rateLimitSvc.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}

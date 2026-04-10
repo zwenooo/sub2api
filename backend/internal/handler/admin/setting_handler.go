@@ -1804,7 +1804,7 @@ type UpdateOpenAIRateLimitRecoverySettingsRequest struct {
 	TestModel            string   `json:"test_model"`
 	CheckIntervalMinutes int      `json:"check_interval_minutes"`
 	TargetStatuses       []string `json:"target_statuses"`
-	AutoRecover          bool     `json:"auto_recover"`
+	AutoRecover          *bool    `json:"auto_recover"`
 }
 
 // UpdateOpenAIRateLimitRecoverySettings 更新 OpenAI 自动探测配置
@@ -1826,12 +1826,21 @@ func (h *SettingHandler) UpdateOpenAIRateLimitRecoverySettings(c *gin.Context) {
 		return
 	}
 
+	targetStatuses := req.TargetStatuses
+	if targetStatuses == nil {
+		targetStatuses = append([]string(nil), service.DefaultOpenAIRateLimitRecoverySettings().TargetStatuses...)
+	}
+	autoRecover := service.DefaultOpenAIRateLimitRecoverySettings().AutoRecover
+	if req.AutoRecover != nil {
+		autoRecover = *req.AutoRecover
+	}
+
 	settings := &service.OpenAIRateLimitRecoverySettings{
 		Enabled:              req.Enabled,
 		TestModel:            req.TestModel,
 		CheckIntervalMinutes: req.CheckIntervalMinutes,
-		TargetStatuses:       req.TargetStatuses,
-		AutoRecover:          req.AutoRecover,
+		TargetStatuses:       targetStatuses,
+		AutoRecover:          autoRecover,
 	}
 	if err := h.settingService.SetOpenAIRateLimitRecoverySettings(c.Request.Context(), settings); err != nil {
 		response.BadRequest(c, err.Error())

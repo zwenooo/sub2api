@@ -1717,7 +1717,7 @@ func normalizeOpenAIRateLimitRecoverySettings(settings *OpenAIRateLimitRecoveryS
 		AutoRecover:          settings.AutoRecover,
 	}
 	if settings.TargetStatuses == nil {
-		return nil, fmt.Errorf("target_statuses is required")
+		settings.TargetStatuses = append([]string(nil), DefaultOpenAIRateLimitRecoverySettings().TargetStatuses...)
 	}
 	targetStatuses, err := normalizeOpenAIProbeTargetStatuses(settings.TargetStatuses)
 	if err != nil {
@@ -1736,6 +1736,9 @@ func normalizeOpenAIRateLimitRecoverySettings(settings *OpenAIRateLimitRecoveryS
 }
 
 func normalizeOpenAIProbeTargetStatuses(statuses []string) ([]string, error) {
+	aliasToCanonical := map[string]string{
+		"inactive": StatusDisabled,
+	}
 	if len(statuses) == 0 {
 		return nil, fmt.Errorf("target_statuses must contain at least one valid status")
 	}
@@ -1745,6 +1748,9 @@ func normalizeOpenAIProbeTargetStatuses(statuses []string) ([]string, error) {
 	for _, allowedStatus := range openAIProbeTargetStatusOrder {
 		for _, rawStatus := range statuses {
 			status := strings.TrimSpace(rawStatus)
+			if canonical, ok := aliasToCanonical[status]; ok {
+				status = canonical
+			}
 			if status == "" || status != allowedStatus {
 				continue
 			}
