@@ -255,7 +255,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			decision.StickyPreviousHit = true
 			decision.SelectedAccountID = selection.Account.ID
 			decision.SelectedAccountType = selection.Account.Type
-			if req.SessionHash != "" {
+			if req.SessionHash != "" && selection.Acquired {
 				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, selection.Account.ID)
 			}
 			return selection, decision, nil
@@ -741,7 +741,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			loadInfo: candidate.loadInfo,
 		})
 	}
-	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.service.concurrencyService, cfg.FallbackMaxWaiting, false)
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.service.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode)
 	for _, item := range waitCandidates {
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, item.account, req.RequestedModel)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {

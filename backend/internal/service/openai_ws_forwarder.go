@@ -3863,8 +3863,8 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 
 	cfg := s.schedulingConfig()
 	if s.concurrencyService != nil {
-		waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-		if waitingCount < cfg.StickySessionMaxWaiting {
+		waitingCount, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
+		if waitErr == nil && waitingCount < cfg.StickySessionMaxWaiting {
 			return &AccountSelectionResult{
 				Account: account,
 				WaitPlan: &AccountWaitPlan{
@@ -3875,7 +3875,6 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 				},
 			}, nil
 		}
-		return nil, ErrNoAvailableAccounts
 	}
 	return nil, nil
 }
