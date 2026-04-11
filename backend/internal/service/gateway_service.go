@@ -73,8 +73,9 @@ type forceCacheBillingKeyType struct{}
 
 // accountWithLoad 账号与负载信息的组合，用于负载感知调度
 type accountWithLoad struct {
-	account  *Account
-	loadInfo *AccountLoadInfo
+	account           *Account
+	loadInfo          *AccountLoadInfo
+	waitQueueOverflow bool
 }
 
 var ForceCacheBillingContextKey = forceCacheBillingKeyType{}
@@ -1176,6 +1177,10 @@ func (s *GatewayService) SelectAccountForModel(ctx context.Context, groupID *int
 
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+	return s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, true)
+}
+
+func (s *GatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, bindSticky bool) (*Account, error) {
 	// 优先检查 context 中的强制平台（/antigravity 路由）
 	var platform string
 	forcePlatform, hasForcePlatform := ctx.Value(ctxkey.ForcePlatform).(string)
@@ -1206,12 +1211,12 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 	// anthropic/gemini 分组支持混合调度（包含启用了 mixed_scheduling 的 antigravity 账户）
 	// 注意：强制平台模式不走混合调度
 	if (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform {
-		return s.selectAccountWithMixedScheduling(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
+		return s.selectAccountWithMixedSchedulingWithBinding(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform, bindSticky)
 	}
 
 	// antigravity 分组、强制平台模式或无分组使用单平台选择
 	// 注意：强制平台模式也必须遵守分组限制，不再回退到全平台查询
-	return s.selectAccountForModelWithPlatform(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
+	return s.selectAccountForModelWithPlatformWithBinding(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform, bindSticky)
 }
 
 // SelectAccountWithLoadAwareness selects account with load-awareness and wait plan.
@@ -1266,7 +1271,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			derefGroupID(groupID), groupPlatform, requestedModel, shortSessionHash(sessionHash), stickyAccountID, cfg.LoadBatchEnabled, s.concurrencyService != nil)
 	}
 
-	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
+	if s.concurrencyService == nil {
 		// 复制排除列表，用于会话限制拒绝时的重试
 		localExcluded := make(map[int64]struct{})
 		for k, v := range excludedIDs {
@@ -1331,6 +1336,90 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	preferOAuth := platform == PlatformGemini
+	if !cfg.LoadBatchEnabled {
+		localExcluded := make(map[int64]struct{})
+		for k, v := range excludedIDs {
+			localExcluded[k] = v
+		}
+
+		waitInputs := make([]accountWithLoad, 0)
+		for {
+			account, err := s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, localExcluded, false)
+			if err != nil {
+				if len(waitInputs) > 0 && isNoAvailableAccountSelectionErr(err) {
+					break
+				}
+				return nil, err
+			}
+
+			result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+			if err == nil && result.Acquired {
+				if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+					result.ReleaseFunc()
+					localExcluded[account.ID] = struct{}{}
+					continue
+				}
+				if sessionHash != "" {
+					_ = s.BindStickySession(ctx, groupID, sessionHash, account.ID)
+				}
+				return &AccountSelectionResult{
+					Account:     account,
+					Acquired:    true,
+					ReleaseFunc: result.ReleaseFunc,
+				}, nil
+			}
+
+			localExcluded[account.ID] = struct{}{}
+
+			if stickyAccountID > 0 && stickyAccountID == account.ID {
+				if waitingCount, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID); waitErr == nil && waitingCount < cfg.StickySessionMaxWaiting {
+					if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+						continue
+					}
+					return &AccountSelectionResult{
+						Account: account,
+						WaitPlan: &AccountWaitPlan{
+							AccountID:      account.ID,
+							MaxConcurrency: account.Concurrency,
+							Timeout:        cfg.StickySessionWaitTimeout,
+							MaxWaiting:     cfg.StickySessionMaxWaiting,
+						},
+					}, nil
+				}
+			}
+
+			waitInputs = append(waitInputs, accountWithLoad{account: account})
+		}
+
+		waitCandidates := rankWaitPlanCandidates(
+			ctx,
+			waitInputs,
+			s.concurrencyService,
+			cfg.FallbackMaxWaiting,
+			preferOAuth,
+			cfg.FallbackSelectionMode,
+		)
+		for _, item := range waitCandidates {
+			if item.account == nil {
+				continue
+			}
+			if !item.waitQueueOverflow && !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
+				continue
+			}
+			return &AccountSelectionResult{
+				Account: item.account,
+				WaitPlan: &AccountWaitPlan{
+					AccountID:      item.account.ID,
+					MaxConcurrency: item.account.Concurrency,
+					Timeout:        cfg.FallbackWaitTimeout,
+					MaxWaiting:     cfg.FallbackMaxWaiting,
+				},
+			}, nil
+		}
+
+		return nil, ErrNoAvailableAccounts
+	}
+
 	if s.debugModelRoutingEnabled() && platform == PlatformAnthropic && requestedModel != "" {
 		logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] load-aware enabled: group_id=%v model=%s session=%s platform=%s", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), platform)
 	}
@@ -1601,9 +1690,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				}
 
 				// 5. 所有路由账号槽位满，优先把请求排到等待队列更短的账号。
-				waitCandidates := rankWaitPlanCandidates(ctx, routingAvailable, s.concurrencyService, cfg.StickySessionMaxWaiting, preferOAuth)
+				waitCandidates := rankWaitPlanCandidates(ctx, routingAvailable, s.concurrencyService, cfg.StickySessionMaxWaiting, preferOAuth, cfg.FallbackSelectionMode)
 				for _, item := range waitCandidates {
-					if !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
+					if !item.waitQueueOverflow && !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
 						continue // 会话限制已满，尝试下一个
 					}
 					if s.debugModelRoutingEnabled() {
@@ -1806,11 +1895,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			loadInfo: loadMap[acc.ID],
 		})
 	}
-	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, preferOAuth)
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, preferOAuth, cfg.FallbackSelectionMode)
 	for _, item := range waitCandidates {
 		acc := item.account
 		// 会话数量限制检查（等待计划也需要占用会话配额）
-		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
+		if !item.waitQueueOverflow && !s.checkAndRegisterSession(ctx, acc, sessionHash) {
 			continue // 会话限制已满，尝试下一个账号
 		}
 		return &AccountSelectionResult{
@@ -2691,42 +2780,84 @@ func cloneAccountLoadInfo(accountID int64, loadInfo *AccountLoadInfo) *AccountLo
 	return &cloned
 }
 
+func isNoAvailableAccountSelectionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNoAvailableAccounts) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no available accounts") || strings.Contains(message, "no available openai accounts")
+}
+
+func normalizeFallbackSelectionMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "random") {
+		return "random"
+	}
+	return "last_used"
+}
+
+func overflowWaitingCount(maxWaiting int) int {
+	if maxWaiting > 0 {
+		return maxWaiting
+	}
+	return 1 << 30
+}
+
 func rankWaitPlanCandidates(
 	ctx context.Context,
 	accounts []accountWithLoad,
 	concurrencyService *ConcurrencyService,
 	maxWaiting int,
 	preferOAuth bool,
+	mode string,
 ) []accountWithLoad {
 	if len(accounts) == 0 {
 		return nil
 	}
 
-	ranked := make([]accountWithLoad, 0, len(accounts))
+	underLimit := make([]accountWithLoad, 0, len(accounts))
+	overflow := make([]accountWithLoad, 0, len(accounts))
 	for _, item := range accounts {
 		if item.account == nil {
 			continue
 		}
 		loadInfo := cloneAccountLoadInfo(item.account.ID, item.loadInfo)
+		queueOverflow := false
 		if item.loadInfo == nil && concurrencyService != nil {
 			if waitingCount, err := concurrencyService.GetAccountWaitingCount(ctx, item.account.ID); err == nil {
 				loadInfo.WaitingCount = waitingCount
+			} else {
+				loadInfo.WaitingCount = overflowWaitingCount(maxWaiting)
+				queueOverflow = true
 			}
 		}
 		if maxWaiting > 0 && loadInfo.WaitingCount >= maxWaiting {
+			queueOverflow = true
+		}
+		rankedItem := accountWithLoad{
+			account:           item.account,
+			loadInfo:          loadInfo,
+			waitQueueOverflow: queueOverflow,
+		}
+		if queueOverflow {
+			overflow = append(overflow, rankedItem)
 			continue
 		}
-		ranked = append(ranked, accountWithLoad{
-			account:  item.account,
-			loadInfo: loadInfo,
-		})
+		underLimit = append(underLimit, rankedItem)
 	}
 
-	sortAccountsByWaitPressure(ranked, preferOAuth)
-	return ranked
+	sortAccountsByWaitPressure(underLimit, preferOAuth, mode)
+	if len(underLimit) > 0 {
+		return underLimit
+	}
+	sortAccountsByWaitPressure(overflow, preferOAuth, mode)
+	return overflow
 }
 
-func sortAccountsByWaitPressure(accounts []accountWithLoad, preferOAuth bool) {
+func sortAccountsByWaitPressure(accounts []accountWithLoad, preferOAuth bool, mode string) {
+	mode = normalizeFallbackSelectionMode(mode)
 	sort.SliceStable(accounts, func(i, j int) bool {
 		a, b := accounts[i], accounts[j]
 		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
@@ -2738,37 +2869,37 @@ func sortAccountsByWaitPressure(accounts []accountWithLoad, preferOAuth bool) {
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
 		}
+		if preferOAuth && a.account.Type != b.account.Type {
+			return a.account.Type == AccountTypeOAuth
+		}
+		if mode == "random" {
+			return a.account.ID < b.account.ID
+		}
 		switch {
 		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
 			return true
 		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
 			return false
 		case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-			if preferOAuth && a.account.Type != b.account.Type {
-				return a.account.Type == AccountTypeOAuth
-			}
 			return a.account.ID < b.account.ID
 		default:
 			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
-			if preferOAuth && a.account.Type != b.account.Type {
-				return a.account.Type == AccountTypeOAuth
-			}
 			return a.account.ID < b.account.ID
 		}
 	})
-	shuffleWithinWaitPressure(accounts, preferOAuth)
+	shuffleWithinWaitPressure(accounts, preferOAuth, mode)
 }
 
-func shuffleWithinWaitPressure(accounts []accountWithLoad, preferOAuth bool) {
+func shuffleWithinWaitPressure(accounts []accountWithLoad, preferOAuth bool, mode string) {
 	if len(accounts) <= 1 {
 		return
 	}
 	i := 0
 	for i < len(accounts) {
 		j := i + 1
-		for j < len(accounts) && sameWaitPressureGroup(accounts[i], accounts[j]) {
+		for j < len(accounts) && sameWaitPressureGroup(accounts[i], accounts[j], mode) {
 			j++
 		}
 		if j-i > 1 {
@@ -2800,7 +2931,7 @@ func shuffleWithinWaitPressure(accounts []accountWithLoad, preferOAuth bool) {
 	}
 }
 
-func sameWaitPressureGroup(a, b accountWithLoad) bool {
+func sameWaitPressureGroup(a, b accountWithLoad, mode string) bool {
 	if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
 		return false
 	}
@@ -2809,6 +2940,9 @@ func sameWaitPressureGroup(a, b accountWithLoad) bool {
 	}
 	if a.account.Priority != b.account.Priority {
 		return false
+	}
+	if normalizeFallbackSelectionMode(mode) == "random" {
+		return true
 	}
 	return sameLastUsedAt(a.account.LastUsedAt, b.account.LastUsedAt)
 }
@@ -2913,7 +3047,7 @@ func sameLastUsedAt(a, b *time.Time) bool {
 // sortCandidatesForFallback 根据配置选择排序策略
 // mode: "last_used"(按最后使用时间) 或 "random"(随机)
 func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, preferOAuth bool, mode string) {
-	if mode == "random" {
+	if normalizeFallbackSelectionMode(mode) == "random" {
 		// 先按优先级排序，然后在同优先级内随机打乱
 		sortAccountsByPriorityOnly(accounts, preferOAuth)
 		shuffleWithinPriority(accounts)
@@ -2962,6 +3096,10 @@ func shuffleWithinPriority(accounts []*Account) {
 
 // selectAccountForModelWithPlatform 选择单平台账户（完全隔离）
 func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, platform string) (*Account, error) {
+	return s.selectAccountForModelWithPlatformWithBinding(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform, true)
+}
+
+func (s *GatewayService) selectAccountForModelWithPlatformWithBinding(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, platform string, bindSticky bool) (*Account, error) {
 	preferOAuth := platform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
 
@@ -3091,7 +3229,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		}
 
 		if selected != nil {
-			if sessionHash != "" && s.cache != nil {
+			if bindSticky && sessionHash != "" && s.cache != nil {
 				if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
 					logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 				}
@@ -3216,7 +3354,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	}
 
 	// 4. 建立粘性绑定
-	if sessionHash != "" && s.cache != nil {
+	if bindSticky && sessionHash != "" && s.cache != nil {
 		if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
 			logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 		}
@@ -3228,6 +3366,10 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 // selectAccountWithMixedScheduling 选择账户（支持混合调度）
 // 查询原生平台账户 + 启用 mixed_scheduling 的 antigravity 账户
 func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, nativePlatform string) (*Account, error) {
+	return s.selectAccountWithMixedSchedulingWithBinding(ctx, groupID, sessionHash, requestedModel, excludedIDs, nativePlatform, true)
+}
+
+func (s *GatewayService) selectAccountWithMixedSchedulingWithBinding(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, nativePlatform string, bindSticky bool) (*Account, error) {
 	preferOAuth := nativePlatform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
 
@@ -3357,7 +3499,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		}
 
 		if selected != nil {
-			if sessionHash != "" && s.cache != nil {
+			if bindSticky && sessionHash != "" && s.cache != nil {
 				if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
 					logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 				}
@@ -3483,7 +3625,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	}
 
 	// 4. 建立粘性绑定
-	if sessionHash != "" && s.cache != nil {
+	if bindSticky && sessionHash != "" && s.cache != nil {
 		if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
 			logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 		}

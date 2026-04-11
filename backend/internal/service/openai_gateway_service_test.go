@@ -710,6 +710,79 @@ func TestOpenAISelectAccountWithLoadAwareness_NoSlotFallbackWait(t *testing.T) {
 	}
 }
 
+func TestOpenAISelectAccountWithLoadAwareness_LoadBatchDisabledSkipsBusyAccount(t *testing.T) {
+	groupID := int64(1)
+	sessionHash := "session_load_batch_disabled"
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 2},
+		},
+	}
+	concurrencyCache := stubConcurrencyCache{
+		acquireResults: map[int64]bool{
+			1: false,
+			2: true,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cache:              &stubGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	cache := svc.cache.(*stubGatewayCache)
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.True(t, selection.Acquired)
+	require.Equal(t, int64(2), selection.Account.ID)
+	require.Equal(t, int64(2), cache.sessionBindings["openai:"+sessionHash])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_LoadBatchDisabledWaitDoesNotPrebindSticky(t *testing.T) {
+	groupID := int64(1)
+	sessionHash := "session_load_batch_wait"
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	cfg.Gateway.Scheduling.FallbackMaxWaiting = 2
+
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+		},
+	}
+	concurrencyCache := stubConcurrencyCache{
+		acquireResults: map[int64]bool{1: false},
+		waitCounts:     map[int64]int{1: 0},
+	}
+
+	cache := &stubGatewayCache{}
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.WaitPlan)
+	require.Equal(t, int64(1), selection.Account.ID)
+	_, exists := cache.sessionBindings["openai:"+sessionHash]
+	require.False(t, exists, "等待计划返回前不应提前写 sticky 绑定")
+}
+
 func TestOpenAISelectAccountForModelWithExclusions_SetsStickyBinding(t *testing.T) {
 	sessionHash := "bind"
 	repo := stubOpenAIAccountRepo{

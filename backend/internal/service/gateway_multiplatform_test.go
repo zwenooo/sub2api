@@ -2040,6 +2040,49 @@ func (m *mockConcurrencyCache) GetUsersLoadBatch(ctx context.Context, users []Us
 	return result, nil
 }
 
+func TestRankWaitPlanCandidates_AllQueuesFullStillReturnsOverflowCandidates(t *testing.T) {
+	older := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-1 * time.Hour)
+
+	ranked := rankWaitPlanCandidates(
+		context.Background(),
+		[]accountWithLoad{
+			{
+				account:  &Account{ID: 1, Priority: 0, LastUsedAt: &older},
+				loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 100, WaitingCount: 1},
+			},
+			{
+				account:  &Account{ID: 2, Priority: 0, LastUsedAt: &newer},
+				loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 100, WaitingCount: 1},
+			},
+		},
+		nil,
+		1,
+		false,
+		"last_used",
+	)
+
+	require.Len(t, ranked, 2)
+	require.Equal(t, int64(1), ranked[0].account.ID)
+	require.Equal(t, int64(2), ranked[1].account.ID)
+}
+
+func TestSameWaitPressureGroup_RandomModeIgnoresLastUsed(t *testing.T) {
+	older := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-1 * time.Hour)
+	a := accountWithLoad{
+		account:  &Account{ID: 1, Priority: 0, LastUsedAt: &older},
+		loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 100, WaitingCount: 0},
+	}
+	b := accountWithLoad{
+		account:  &Account{ID: 2, Priority: 0, LastUsedAt: &newer},
+		loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 100, WaitingCount: 0},
+	}
+
+	require.True(t, sameWaitPressureGroup(a, b, "random"))
+	require.False(t, sameWaitPressureGroup(a, b, "last_used"))
+}
+
 // TestGatewayService_SelectAccountWithLoadAwareness tests load-aware account selection
 func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 	ctx := context.Background()
@@ -2073,6 +2116,46 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.NotNil(t, result)
 		require.NotNil(t, result.Account)
 		require.Equal(t, int64(1), result.Account.ID, "应选择优先级最高的账号")
+	})
+
+	t.Run("禁用负载批量查询-繁忙账号会继续尝试其他账号", func(t *testing.T) {
+		repo := &mockAccountRepoForPlatform{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5},
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cfg := testConfig()
+		cfg.Gateway.Scheduling.LoadBatchEnabled = false
+
+		concurrencyCache := &mockConcurrencyCache{
+			acquireResults: map[int64]bool{
+				1: false,
+				2: true,
+			},
+		}
+
+		svc := &GatewayService{
+			accountRepo:        repo,
+			cache:              &mockGatewayCacheForPlatform{},
+			cfg:                cfg,
+			concurrencyService: NewConcurrencyService(concurrencyCache),
+		}
+
+		result, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.Account)
+		require.True(t, result.Acquired)
+		require.Equal(t, int64(2), result.Account.ID)
+		if result.ReleaseFunc != nil {
+			result.ReleaseFunc()
+		}
 	})
 
 	t.Run("桶快照旧但单账号快照已error时跳过该账号", func(t *testing.T) {

@@ -202,7 +202,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_ForceHTTPIgnored
 	require.Nil(t, selection, "force_http 场景应忽略 previous_response_id 粘连")
 }
 
-func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_QueueFullFailsFast(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_QueueFullFallsBack(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(23)
 	accounts := []Account{
@@ -259,8 +259,8 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_QueueFullFailsFa
 	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_prev_busy", 21, time.Hour))
 
 	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_prev_busy", "gpt-5.1", nil)
-	require.ErrorIs(t, err, ErrNoAvailableAccounts)
-	require.Nil(t, selection)
+	require.NoError(t, err)
+	require.Nil(t, selection, "等待队列已满时应放弃 previous_response_id 粘连，回落到后续调度")
 }
 
 func newOpenAIWSV2TestConfig() *config.Config {

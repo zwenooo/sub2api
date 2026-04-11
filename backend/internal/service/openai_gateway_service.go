@@ -1197,10 +1197,10 @@ func (s *OpenAIGatewayService) SelectAccountForModel(ctx context.Context, groupI
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 // SelectAccountForModelWithExclusions 选择支持指定模型的账号，同时排除指定的账号。
 func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
-	return s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, 0)
+	return s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, 0, true)
 }
 
-func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, stickyAccountID int64) (*Account, error) {
+func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, stickyAccountID int64, bindSticky bool) (*Account, error) {
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),
@@ -1234,7 +1234,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 4. 设置粘性会话绑定
 	// Set sticky session binding
-	if sessionHash != "" {
+	if bindSticky && sessionHash != "" {
 		_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, selected.ID, openaiStickySessionTTL)
 	}
 
@@ -1397,8 +1397,8 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			stickyAccountID = accountID
 		}
 	}
-	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
-		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, stickyAccountID)
+	if s.concurrencyService == nil {
+		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, stickyAccountID, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1433,6 +1433,82 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 				MaxWaiting:     cfg.FallbackMaxWaiting,
 			},
 		}, nil
+	}
+	if !cfg.LoadBatchEnabled {
+		localExcluded := make(map[int64]struct{})
+		for k, v := range excludedIDs {
+			localExcluded[k] = v
+		}
+
+		waitInputs := make([]accountWithLoad, 0)
+		for {
+			account, err := s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, localExcluded, stickyAccountID, false)
+			if err != nil {
+				if len(waitInputs) > 0 && isNoAvailableAccountSelectionErr(err) {
+					break
+				}
+				return nil, err
+			}
+
+			result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+			if err == nil && result.Acquired {
+				if sessionHash != "" {
+					_ = s.BindStickySession(ctx, groupID, sessionHash, account.ID)
+				}
+				return &AccountSelectionResult{
+					Account:     account,
+					Acquired:    true,
+					ReleaseFunc: result.ReleaseFunc,
+				}, nil
+			}
+
+			localExcluded[account.ID] = struct{}{}
+
+			if stickyAccountID > 0 && stickyAccountID == account.ID {
+				if waitingCount, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID); waitErr == nil && waitingCount < cfg.StickySessionMaxWaiting {
+					return &AccountSelectionResult{
+						Account: account,
+						WaitPlan: &AccountWaitPlan{
+							AccountID:      account.ID,
+							MaxConcurrency: account.Concurrency,
+							Timeout:        cfg.StickySessionWaitTimeout,
+							MaxWaiting:     cfg.StickySessionMaxWaiting,
+						},
+					}, nil
+				}
+			}
+
+			waitInputs = append(waitInputs, accountWithLoad{account: account})
+		}
+
+		waitCandidates := rankWaitPlanCandidates(
+			ctx,
+			waitInputs,
+			s.concurrencyService,
+			cfg.FallbackMaxWaiting,
+			false,
+			cfg.FallbackSelectionMode,
+		)
+		for _, item := range waitCandidates {
+			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
+			if fresh == nil {
+				continue
+			}
+			if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
+				continue
+			}
+			return &AccountSelectionResult{
+				Account: fresh,
+				WaitPlan: &AccountWaitPlan{
+					AccountID:      fresh.ID,
+					MaxConcurrency: fresh.Concurrency,
+					Timeout:        cfg.FallbackWaitTimeout,
+					MaxWaiting:     cfg.FallbackMaxWaiting,
+				},
+			}, nil
+		}
+
+		return nil, ErrNoAvailableAccounts
 	}
 
 	accounts, err := s.listSchedulableAccounts(ctx, groupID)
@@ -1625,7 +1701,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			loadInfo: loadMap[acc.ID],
 		})
 	}
-	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, false)
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode)
 	for _, item := range waitCandidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
 		if fresh == nil {
