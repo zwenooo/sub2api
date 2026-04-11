@@ -1600,9 +1600,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					}
 				}
 
-				// 5. 所有路由账号槽位满，尝试返回等待计划（选择负载最低的）
-				// 遍历找到第一个满足会话限制的账号
-				for _, item := range routingAvailable {
+				// 5. 所有路由账号槽位满，优先把请求排到等待队列更短的账号。
+				waitCandidates := rankWaitPlanCandidates(ctx, routingAvailable, s.concurrencyService, cfg.StickySessionMaxWaiting, preferOAuth)
+				for _, item := range waitCandidates {
 					if !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
 						continue // 会话限制已满，尝试下一个
 					}
@@ -1799,8 +1799,16 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	// ============ Layer 3: 兜底排队 ============
-	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
+	waitInputs := make([]accountWithLoad, 0, len(candidates))
 	for _, acc := range candidates {
+		waitInputs = append(waitInputs, accountWithLoad{
+			account:  acc,
+			loadInfo: loadMap[acc.ID],
+		})
+	}
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, preferOAuth)
+	for _, item := range waitCandidates {
+		acc := item.account
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
 			continue // 会话限制已满，尝试下一个账号
@@ -2670,6 +2678,139 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 		}
 	})
 	shuffleWithinPriorityAndLastUsed(accounts, preferOAuth)
+}
+
+func cloneAccountLoadInfo(accountID int64, loadInfo *AccountLoadInfo) *AccountLoadInfo {
+	if loadInfo == nil {
+		return &AccountLoadInfo{AccountID: accountID}
+	}
+	cloned := *loadInfo
+	if cloned.AccountID == 0 {
+		cloned.AccountID = accountID
+	}
+	return &cloned
+}
+
+func rankWaitPlanCandidates(
+	ctx context.Context,
+	accounts []accountWithLoad,
+	concurrencyService *ConcurrencyService,
+	maxWaiting int,
+	preferOAuth bool,
+) []accountWithLoad {
+	if len(accounts) == 0 {
+		return nil
+	}
+
+	ranked := make([]accountWithLoad, 0, len(accounts))
+	for _, item := range accounts {
+		if item.account == nil {
+			continue
+		}
+		loadInfo := cloneAccountLoadInfo(item.account.ID, item.loadInfo)
+		if item.loadInfo == nil && concurrencyService != nil {
+			if waitingCount, err := concurrencyService.GetAccountWaitingCount(ctx, item.account.ID); err == nil {
+				loadInfo.WaitingCount = waitingCount
+			}
+		}
+		if maxWaiting > 0 && loadInfo.WaitingCount >= maxWaiting {
+			continue
+		}
+		ranked = append(ranked, accountWithLoad{
+			account:  item.account,
+			loadInfo: loadInfo,
+		})
+	}
+
+	sortAccountsByWaitPressure(ranked, preferOAuth)
+	return ranked
+}
+
+func sortAccountsByWaitPressure(accounts []accountWithLoad, preferOAuth bool) {
+	sort.SliceStable(accounts, func(i, j int) bool {
+		a, b := accounts[i], accounts[j]
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		switch {
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+			return true
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+			return false
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+			if preferOAuth && a.account.Type != b.account.Type {
+				return a.account.Type == AccountTypeOAuth
+			}
+			return a.account.ID < b.account.ID
+		default:
+			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
+				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+			}
+			if preferOAuth && a.account.Type != b.account.Type {
+				return a.account.Type == AccountTypeOAuth
+			}
+			return a.account.ID < b.account.ID
+		}
+	})
+	shuffleWithinWaitPressure(accounts, preferOAuth)
+}
+
+func shuffleWithinWaitPressure(accounts []accountWithLoad, preferOAuth bool) {
+	if len(accounts) <= 1 {
+		return
+	}
+	i := 0
+	for i < len(accounts) {
+		j := i + 1
+		for j < len(accounts) && sameWaitPressureGroup(accounts[i], accounts[j]) {
+			j++
+		}
+		if j-i > 1 {
+			if preferOAuth {
+				oauth := make([]accountWithLoad, 0, j-i)
+				others := make([]accountWithLoad, 0, j-i)
+				for _, acc := range accounts[i:j] {
+					if acc.account.Type == AccountTypeOAuth {
+						oauth = append(oauth, acc)
+					} else {
+						others = append(others, acc)
+					}
+				}
+				if len(oauth) > 1 {
+					mathrand.Shuffle(len(oauth), func(a, b int) { oauth[a], oauth[b] = oauth[b], oauth[a] })
+				}
+				if len(others) > 1 {
+					mathrand.Shuffle(len(others), func(a, b int) { others[a], others[b] = others[b], others[a] })
+				}
+				copy(accounts[i:], oauth)
+				copy(accounts[i+len(oauth):], others)
+			} else {
+				mathrand.Shuffle(j-i, func(a, b int) {
+					accounts[i+a], accounts[i+b] = accounts[i+b], accounts[i+a]
+				})
+			}
+		}
+		i = j
+	}
+}
+
+func sameWaitPressureGroup(a, b accountWithLoad) bool {
+	if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+		return false
+	}
+	if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+		return false
+	}
+	if a.account.Priority != b.account.Priority {
+		return false
+	}
+	return sameLastUsedAt(a.account.LastUsedAt, b.account.LastUsedAt)
 }
 
 // shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。

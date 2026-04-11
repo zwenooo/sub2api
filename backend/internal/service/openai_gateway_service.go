@@ -1618,9 +1618,16 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	// ============ Layer 3: Fallback wait ============
-	sortAccountsByPriorityAndLastUsed(candidates, false)
+	waitInputs := make([]accountWithLoad, 0, len(candidates))
 	for _, acc := range candidates {
-		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel)
+		waitInputs = append(waitInputs, accountWithLoad{
+			account:  acc,
+			loadInfo: loadMap[acc.ID],
+		})
+	}
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, false)
+	for _, item := range waitCandidates {
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
 		if fresh == nil {
 			continue
 		}
