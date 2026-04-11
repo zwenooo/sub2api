@@ -202,7 +202,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_ForceHTTPIgnored
 	require.Nil(t, selection, "force_http 场景应忽略 previous_response_id 粘连")
 }
 
-func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_BusyKeepsSticky(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_QueueFullFailsFast(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(23)
 	accounts := []Account{
@@ -259,13 +259,8 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_BusyKeepsSticky(
 	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_prev_busy", 21, time.Hour))
 
 	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_prev_busy", "gpt-5.1", nil)
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(21), selection.Account.ID, "busy previous_response sticky account should remain selected")
-	require.False(t, selection.Acquired)
-	require.NotNil(t, selection.WaitPlan)
-	require.Equal(t, int64(21), selection.WaitPlan.AccountID)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Nil(t, selection)
 }
 
 func newOpenAIWSV2TestConfig() *config.Config {

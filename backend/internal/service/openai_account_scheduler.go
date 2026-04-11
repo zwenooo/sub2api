@@ -350,15 +350,18 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	cfg := s.service.schedulingConfig()
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	if s.service.concurrencyService != nil {
-		return &AccountSelectionResult{
-			Account: account,
-			WaitPlan: &AccountWaitPlan{
-				AccountID:      accountID,
-				MaxConcurrency: account.Concurrency,
-				Timeout:        cfg.StickySessionWaitTimeout,
-				MaxWaiting:     cfg.StickySessionMaxWaiting,
-			},
-		}, nil
+		waitingCount, _ := s.service.concurrencyService.GetAccountWaitingCount(ctx, accountID)
+		if waitingCount < cfg.StickySessionMaxWaiting {
+			return &AccountSelectionResult{
+				Account: account,
+				WaitPlan: &AccountWaitPlan{
+					AccountID:      accountID,
+					MaxConcurrency: account.Concurrency,
+					Timeout:        cfg.StickySessionWaitTimeout,
+					MaxWaiting:     cfg.StickySessionMaxWaiting,
+				},
+			}, nil
+		}
 	}
 	return nil, nil
 }
@@ -731,8 +734,16 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	cfg := s.service.schedulingConfig()
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
-	for _, candidate := range selectionOrder {
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
+	waitInputs := make([]accountWithLoad, 0, len(candidates))
+	for _, candidate := range candidates {
+		waitInputs = append(waitInputs, accountWithLoad{
+			account:  candidate.account,
+			loadInfo: candidate.loadInfo,
+		})
+	}
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.service.concurrencyService, cfg.FallbackMaxWaiting, false)
+	for _, item := range waitCandidates {
+		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, item.account, req.RequestedModel)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
 			continue
 		}
