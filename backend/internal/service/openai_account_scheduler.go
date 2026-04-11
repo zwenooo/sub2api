@@ -422,6 +422,93 @@ func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right open
 	return left.account.ID < right.account.ID
 }
 
+func filterOpenAICandidatesByMinPriority(candidates []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return nil
+	}
+	minPriority := candidates[0].account.Priority
+	for _, candidate := range candidates[1:] {
+		if candidate.account.Priority < minPriority {
+			minPriority = candidate.account.Priority
+		}
+	}
+	filtered := make([]openAIAccountCandidateScore, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.account.Priority == minPriority {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
+func scoreOpenAICandidates(candidates []openAIAccountCandidateScore, weights GatewayOpenAIWSSchedulerScoreWeightsView) {
+	if len(candidates) == 0 {
+		return
+	}
+	minPriority, maxPriority := candidates[0].account.Priority, candidates[0].account.Priority
+	maxWaiting := 1
+	minTTFT, maxTTFT := 0.0, 0.0
+	hasTTFTSample := false
+	for _, item := range candidates {
+		if item.account.Priority < minPriority {
+			minPriority = item.account.Priority
+		}
+		if item.account.Priority > maxPriority {
+			maxPriority = item.account.Priority
+		}
+		if item.loadInfo.WaitingCount > maxWaiting {
+			maxWaiting = item.loadInfo.WaitingCount
+		}
+		if item.hasTTFT && item.ttft > 0 {
+			if !hasTTFTSample {
+				minTTFT, maxTTFT = item.ttft, item.ttft
+				hasTTFTSample = true
+			} else {
+				if item.ttft < minTTFT {
+					minTTFT = item.ttft
+				}
+				if item.ttft > maxTTFT {
+					maxTTFT = item.ttft
+				}
+			}
+		}
+	}
+	for i := range candidates {
+		item := &candidates[i]
+		priorityFactor := 1.0
+		if maxPriority > minPriority {
+			priorityFactor = 1 - float64(item.account.Priority-minPriority)/float64(maxPriority-minPriority)
+		}
+		loadFactor := 1 - clamp01(float64(item.loadInfo.LoadRate)/100.0)
+		queueFactor := 1 - clamp01(float64(item.loadInfo.WaitingCount)/float64(maxWaiting))
+		errorFactor := 1 - clamp01(item.errorRate)
+		ttftFactor := 0.5
+		if item.hasTTFT && hasTTFTSample && maxTTFT > minTTFT {
+			ttftFactor = 1 - clamp01((item.ttft-minTTFT)/(maxTTFT-minTTFT))
+		}
+
+		item.score = weights.Priority*priorityFactor +
+			weights.Load*loadFactor +
+			weights.Queue*queueFactor +
+			weights.ErrorRate*errorFactor +
+			weights.TTFT*ttftFactor
+	}
+}
+
+func removeOpenAICandidatesByID(candidates []openAIAccountCandidateScore, accountID int64) []openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.account == nil || candidate.account.ID == accountID {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered
+}
+
 func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK int) []openAIAccountCandidateScore {
 	if len(candidates) == 0 {
 		return nil
@@ -626,41 +713,15 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 	}
 
-	minPriority, maxPriority := filtered[0].Priority, filtered[0].Priority
-	maxWaiting := 1
 	loadRateSum := 0.0
 	loadRateSumSquares := 0.0
-	minTTFT, maxTTFT := 0.0, 0.0
-	hasTTFTSample := false
 	candidates := make([]openAIAccountCandidateScore, 0, len(filtered))
 	for _, account := range filtered {
 		loadInfo := loadMap[account.ID]
 		if loadInfo == nil {
 			loadInfo = &AccountLoadInfo{AccountID: account.ID}
 		}
-		if account.Priority < minPriority {
-			minPriority = account.Priority
-		}
-		if account.Priority > maxPriority {
-			maxPriority = account.Priority
-		}
-		if loadInfo.WaitingCount > maxWaiting {
-			maxWaiting = loadInfo.WaitingCount
-		}
 		errorRate, ttft, hasTTFT := s.stats.snapshot(account.ID)
-		if hasTTFT && ttft > 0 {
-			if !hasTTFTSample {
-				minTTFT, maxTTFT = ttft, ttft
-				hasTTFTSample = true
-			} else {
-				if ttft < minTTFT {
-					minTTFT = ttft
-				}
-				if ttft > maxTTFT {
-					maxTTFT = ttft
-				}
-			}
-		}
 		loadRate := float64(loadInfo.LoadRate)
 		loadRateSum += loadRate
 		loadRateSumSquares += loadRate * loadRate
@@ -675,60 +736,50 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	loadSkew := calcLoadSkewByMoments(loadRateSum, loadRateSumSquares, len(candidates))
 
 	weights := s.service.openAIWSSchedulerWeights()
-	for i := range candidates {
-		item := &candidates[i]
-		priorityFactor := 1.0
-		if maxPriority > minPriority {
-			priorityFactor = 1 - float64(item.account.Priority-minPriority)/float64(maxPriority-minPriority)
+	remaining := append([]openAIAccountCandidateScore(nil), candidates...)
+	topKLimit := s.service.openAIWSLBTopK()
+	for len(remaining) > 0 {
+		priorityBatch := filterOpenAICandidatesByMinPriority(remaining)
+		scoreOpenAICandidates(priorityBatch, weights)
+
+		topK := topKLimit
+		if topK > len(priorityBatch) {
+			topK = len(priorityBatch)
 		}
-		loadFactor := 1 - clamp01(float64(item.loadInfo.LoadRate)/100.0)
-		queueFactor := 1 - clamp01(float64(item.loadInfo.WaitingCount)/float64(maxWaiting))
-		errorFactor := 1 - clamp01(item.errorRate)
-		ttftFactor := 0.5
-		if item.hasTTFT && hasTTFTSample && maxTTFT > minTTFT {
-			ttftFactor = 1 - clamp01((item.ttft-minTTFT)/(maxTTFT-minTTFT))
+		if topK <= 0 {
+			topK = 1
 		}
 
-		item.score = weights.Priority*priorityFactor +
-			weights.Load*loadFactor +
-			weights.Queue*queueFactor +
-			weights.ErrorRate*errorFactor +
-			weights.TTFT*ttftFactor
-	}
+		rankedCandidates := selectTopKOpenAICandidates(priorityBatch, topK)
+		selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
 
-	topK := s.service.openAIWSLBTopK()
-	if topK > len(candidates) {
-		topK = len(candidates)
-	}
-	if topK <= 0 {
-		topK = 1
-	}
-	rankedCandidates := selectTopKOpenAICandidates(candidates, topK)
-	selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
-
-	for i := 0; i < len(selectionOrder); i++ {
-		candidate := selectionOrder[i]
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
-			continue
-		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
-			continue
-		}
-		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
-		if acquireErr != nil {
-			return nil, len(candidates), topK, loadSkew, acquireErr
-		}
-		if result != nil && result.Acquired {
-			if req.SessionHash != "" {
-				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
+		for i := 0; i < len(selectionOrder); i++ {
+			candidate := selectionOrder[i]
+			fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
+			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+				remaining = removeOpenAICandidatesByID(remaining, candidate.account.ID)
+				continue
 			}
-			return &AccountSelectionResult{
-				Account:     fresh,
-				Acquired:    true,
-				ReleaseFunc: result.ReleaseFunc,
-			}, len(candidates), topK, loadSkew, nil
+			fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel)
+			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+				remaining = removeOpenAICandidatesByID(remaining, candidate.account.ID)
+				continue
+			}
+			result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
+			if acquireErr != nil {
+				return nil, len(candidates), topK, loadSkew, acquireErr
+			}
+			if result != nil && result.Acquired {
+				if req.SessionHash != "" {
+					_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
+				}
+				return &AccountSelectionResult{
+					Account:     fresh,
+					Acquired:    true,
+					ReleaseFunc: result.ReleaseFunc,
+				}, len(candidates), topK, loadSkew, nil
+			}
+			remaining = removeOpenAICandidatesByID(remaining, fresh.ID)
 		}
 	}
 
@@ -755,10 +806,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				Timeout:        cfg.FallbackWaitTimeout,
 				MaxWaiting:     cfg.FallbackMaxWaiting,
 			},
-		}, len(candidates), topK, loadSkew, nil
+		}, len(candidates), 0, loadSkew, nil
 	}
 
-	return nil, len(candidates), topK, loadSkew, ErrNoAvailableAccounts
+	return nil, len(candidates), 0, loadSkew, ErrNoAvailableAccounts
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {

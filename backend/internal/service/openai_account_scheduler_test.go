@@ -18,6 +18,30 @@ type openAISnapshotCacheStub struct {
 	accountsByID     map[int64]*Account
 }
 
+type trackingConcurrencyCache struct {
+	stubConcurrencyCache
+	mu           sync.Mutex
+	acquireOrder []int64
+}
+
+func (c *trackingConcurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+	c.mu.Lock()
+	c.acquireOrder = append(c.acquireOrder, accountID)
+	c.mu.Unlock()
+	if c.acquireResults != nil {
+		if result, ok := c.acquireResults[accountID]; ok {
+			return result, nil
+		}
+	}
+	return true, nil
+}
+
+func (c *trackingConcurrencyCache) AcquireOrder() []int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]int64(nil), c.acquireOrder...)
+}
+
 func (s *openAISnapshotCacheStub) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
 	if len(s.snapshotAccounts) == 0 {
 		return nil, false, nil
@@ -631,6 +655,143 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 	require.Equal(t, 3, decision.CandidateCount)
 	require.Equal(t, 2, decision.TopK)
 	require.Greater(t, decision.LoadSkew, 0.0)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceHonorsPriorityBeforeLoad(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(111)
+	accounts := []Account{
+		{
+			ID:          3111,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		},
+		{
+			ID:          3112,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    9,
+		},
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.LBTopK = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 0.1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1.0
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1.0
+
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			3111: {AccountID: 3111, LoadRate: 80, WaitingCount: 5},
+			3112: {AccountID: 3112, LoadRate: 0, WaitingCount: 0},
+		},
+		acquireResults: map[int64]bool{
+			3111: true,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
+		cache:              &stubGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"priority-hard-constraint",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.True(t, selection.Acquired)
+	require.Equal(t, int64(3111), selection.Account.ID, "更高优先级账号应先于低优先级账号参与负载均衡选择")
+	require.Equal(t, 1, decision.TopK, "不同优先级时应先收敛到最高优先级层")
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceFallsThroughToLowerPriorityWhenHigherPriorityBusy(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(112)
+	accounts := []Account{
+		{
+			ID:          3121,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		},
+		{
+			ID:          3122,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    9,
+		},
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.LBTopK = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 0.1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1.0
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1.0
+
+	concurrencyCache := &trackingConcurrencyCache{stubConcurrencyCache: stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			3121: {AccountID: 3121, LoadRate: 80, WaitingCount: 5},
+			3122: {AccountID: 3122, LoadRate: 0, WaitingCount: 0},
+		},
+		acquireResults: map[int64]bool{
+			3121: false,
+			3122: true,
+		},
+	}}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
+		cache:              &stubGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"priority-fallback-order",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.True(t, selection.Acquired)
+	require.Equal(t, int64(3122), selection.Account.ID, "高优先级账号抢不到槽位后才应回退到低优先级账号")
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, 1, decision.TopK, "分层调度命中的批次 topK 应基于当前优先级层")
+	require.Equal(t, []int64{3121, 3122}, concurrencyCache.AcquireOrder(), "应先尝试最高优先级账号，再回退到低优先级账号")
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
