@@ -149,7 +149,6 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotPersistsExtraAndRate
 	}
 	svc := &AccountUsageService{accountRepo: repo}
 	resetAt := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
-
 	svc.persistOpenAICodexProbeSnapshot(321, map[string]any{
 		"codex_7d_used_percent": 100.0,
 		"codex_7d_reset_at":     resetAt.Format(time.RFC3339),
@@ -161,7 +160,7 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotPersistsExtraAndRate
 			t.Fatalf("codex_7d_used_percent = %v, want 100", got)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("waiting for codex probe extra persistence timed out")
+		t.Fatal("等待 codex 探测快照写入 extra 超时")
 	}
 
 	select {
@@ -169,6 +168,42 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotPersistsExtraAndRate
 		require.WithinDuration(t, resetAt, got, time.Second)
 	case <-time.After(2 * time.Second):
 		t.Fatal("waiting for codex probe rate-limit persistence timed out")
+	}
+}
+
+func TestAccountUsageService_GetOpenAIUsage_DoesNotPromoteCodexExtraToRateLimit(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Now().Add(6 * 24 * time.Hour).UTC().Truncate(time.Second)
+	repo := &accountUsageCodexProbeRepo{
+		rateLimitCh: make(chan time.Time, 1),
+	}
+	svc := &AccountUsageService{accountRepo: repo}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"codex_5h_used_percent": 1.0,
+			"codex_5h_reset_at":     time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339),
+			"codex_7d_used_percent": 100.0,
+			"codex_7d_reset_at":     resetAt.Format(time.RFC3339),
+		},
+	}
+
+	usage, err := svc.getOpenAIUsage(context.Background(), account)
+	if err != nil {
+		t.Fatalf("getOpenAIUsage() error = %v", err)
+	}
+	if usage.SevenDay == nil || usage.SevenDay.Utilization != 100.0 {
+		t.Fatalf("expected visible 7d usage, got %#v", usage.SevenDay)
+	}
+	if account.RateLimitResetAt != nil {
+		t.Fatalf("codex extra should not overwrite runtime rate limit state: %v", account.RateLimitResetAt)
+	}
+	select {
+	case got := <-repo.rateLimitCh:
+		t.Fatalf("codex extra should not be persisted as runtime rate limit state: %v", got)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

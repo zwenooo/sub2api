@@ -110,7 +110,7 @@ type UsageLog struct {
 	ModelMappingChain *string
 	// BillingTier 计费层级标签（per_request/image 模式）
 	BillingTier *string
-	// BillingMode 计费模式：token/image（sora 路径为 nil）
+	// BillingMode 计费模式：token/image
 	BillingMode *string
 	// ServiceTier records the OpenAI service tier used for billing, e.g. "priority" / "flex".
 	ServiceTier *string
@@ -152,6 +152,8 @@ type UsageLog struct {
 	RateMultiplier    float64
 	// AccountRateMultiplier 账号计费倍率快照（nil 表示历史数据，按 1.0 处理）
 	AccountRateMultiplier *float64
+	// AccountStatsCost 账号统计定价预计算费用（nil = 使用默认公式 total_cost × account_rate_multiplier）
+	AccountStatsCost *float64
 
 	BillingType  int8
 	RequestType  RequestType

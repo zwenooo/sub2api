@@ -223,13 +223,18 @@
         <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @refresh-pending-openai="handleBatchRefreshPendingOpenAI" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
+          ref="dataTableRef"
           :columns="cols"
           :data="accounts"
           :loading="loading"
           row-key="id"
+          :server-side-sort="true"
+          @sort="handleSort"
           default-sort-key="name"
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
+          :estimate-row-height="72"
+          :overscan="5"
         >
           <template #header-select>
             <input
@@ -241,7 +246,7 @@
             />
           </template>
           <template #cell-select="{ row }">
-            <input type="checkbox" :checked="selIds.includes(row.id)" @change="toggleSel(row.id)" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+            <input type="checkbox" :checked="isSelected(row.id)" @change="toggleSel(row.id)" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
           </template>
           <template #cell-name="{ row, value }">
             <div class="flex flex-col">
@@ -274,7 +279,9 @@
             <AccountCapacityCell :account="row" />
           </template>
           <template #cell-status="{ row }">
-            <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
+            <div class="flex items-center gap-1.5">
+              <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
+            </div>
           </template>
           <template #cell-schedulable="{ row }">
             <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
@@ -404,7 +411,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { useTableLoader } from '@/composables/useTableLoader'
-import { useSwipeSelect } from '@/composables/useSwipeSelect'
+import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
 import { useTableSelection } from '@/composables/useTableSelection'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
@@ -458,6 +465,7 @@ const router = useRouter()
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
 const accountTableRef = ref<HTMLElement | null>(null)
+const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
 const selPlatforms = computed<AccountPlatform[]>(() => {
   const platforms = new Set(
     accounts.value
@@ -514,6 +522,37 @@ const HIDDEN_COLUMNS_KEY = 'account-hidden-columns'
 
 // Sorting settings
 const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort'
+type AccountSortOrder = 'asc' | 'desc'
+type AccountSortState = {
+  sort_by: string
+  sort_order: AccountSortOrder
+}
+const ACCOUNT_SORTABLE_KEYS = new Set([
+  'name',
+  'status',
+  'schedulable',
+  'priority',
+  'rate_multiplier',
+  'last_used_at',
+  'expires_at'
+])
+const loadInitialAccountSortState = (): AccountSortState => {
+  const fallback: AccountSortState = { sort_by: 'name', sort_order: 'asc' }
+  try {
+    const raw = localStorage.getItem(ACCOUNT_SORT_STORAGE_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as { key?: string; order?: string }
+    const key = typeof parsed.key === 'string' ? parsed.key : ''
+    if (!ACCOUNT_SORTABLE_KEYS.has(key)) return fallback
+    return {
+      sort_by: key,
+      sort_order: parsed.order === 'desc' ? 'desc' : 'asc'
+    }
+  } catch {
+    return fallback
+  }
+}
+const sortState = reactive<AccountSortState>(loadInitialAccountSortState())
 
 // Auto refresh settings
 const showAutoRefreshDropdown = ref(false)
@@ -819,7 +858,16 @@ const {
   handlePageSizeChange: baseHandlePageSizeChange
 } = useTableLoader<Account, any>({
   fetchFn: adminAPI.accounts.list,
-  initialParams: { platform: '', type: '', status: '', privacy_mode: '', group: '', search: '' }
+  initialParams: {
+    platform: '',
+    type: '',
+    status: '',
+    privacy_mode: '',
+    group: '',
+    search: '',
+    sort_by: sortState.sort_by,
+    sort_order: sortState.sort_order
+  }
 })
 
 const {
@@ -833,17 +881,25 @@ const {
   clear: clearSelection,
   removeMany: removeSelectedAccounts,
   toggleVisible,
-  selectVisible: selectPage
+  selectVisible: selectPage,
+  batchUpdate
 } = useTableSelection<Account>({
   rows: accounts,
   getId: (account) => account.id
 })
 
+const swipeVirtualContext: SwipeSelectVirtualContext = {
+  getVirtualizer: () => dataTableRef.value?.virtualizer ?? null,
+  getSortedData: () => dataTableRef.value?.sortedData ?? accounts.value,
+  getRowId: (row: any) => row.id,
+}
+
 useSwipeSelect(accountTableRef, {
   isSelected,
   select,
-  deselect
-})
+  deselect,
+  batchUpdate
+}, swipeVirtualContext)
 
 const resetAutoRefreshCache = () => {
   autoRefreshETag.value = null
@@ -900,6 +956,19 @@ const handlePageSizeChange = (size: number) => {
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = true
   baseHandlePageSizeChange(size)
+}
+
+const handleSort = (key: string, order: AccountSortOrder) => {
+  sortState.sort_by = key
+  sortState.sort_order = order
+  const requestParams = params as any
+  requestParams.sort_by = key
+  requestParams.sort_order = order
+  pagination.page = 1
+  hasPendingListSync.value = false
+  resetAutoRefreshCache()
+  pendingTodayStatsRefresh.value = true
+  load()
 }
 
 watch(loading, (isLoading, wasLoading) => {
@@ -1045,6 +1114,8 @@ const refreshAccountsIncrementally = async () => {
         privacy_mode?: string
         group?: string
         search?: string
+        sort_by?: string
+        sort_order?: AccountSortOrder
 
       },
       { etag: autoRefreshETag.value }
@@ -1439,6 +1510,18 @@ const handleBulkToggleSchedulable = async (schedulable: boolean) => {
 const handleBulkUpdated = () => { showBulkEdit.value = false; clearSelection(); reload() }
 const handleDataImported = () => { showImportData.value = false; reload() }
 const handleOpenAIAuthImported = () => { reload() }
+const ACCOUNT_UNGROUPED_GROUP_QUERY_VALUE = 'ungrouped'
+const ACCOUNT_PRIVACY_MODE_UNSET_QUERY_VALUE = '__unset__'
+const buildAccountQueryFilters = () => ({
+  platform: params.platform || '',
+  type: params.type || '',
+  status: params.status || '',
+  group: params.group || '',
+  privacy_mode: params.privacy_mode || '',
+  search: params.search || '',
+  sort_by: sortState.sort_by,
+  sort_order: sortState.sort_order
+})
 const hasFutureTimestamp = (value?: string | null) => {
   if (!value) return false
   const ts = new Date(value).getTime()
@@ -1484,29 +1567,32 @@ const accountMatchesPrivacyModeFilter = (account: Account) => {
   const privacyModeFilter = String(params.privacy_mode || '').trim()
   if (!privacyModeFilter) return true
   const rawPrivacyMode = account.extra?.privacy_mode
-  if (privacyModeFilter === '__unset__') {
+  if (privacyModeFilter === ACCOUNT_PRIVACY_MODE_UNSET_QUERY_VALUE) {
     return rawPrivacyMode === undefined || rawPrivacyMode === ''
   }
   return rawPrivacyMode === privacyModeFilter
 }
 
 const accountMatchesCurrentFilters = (account: Account) => {
-  if (params.platform && account.platform !== params.platform) return false
-  if (params.type && account.type !== params.type) return false
-  if (params.status) {
-    if (params.status === 'active') {
+  const filters = buildAccountQueryFilters()
+  if (filters.platform && account.platform !== filters.platform) return false
+  if (filters.type && account.type !== filters.type) return false
+  if (filters.status) {
+    if (filters.status === 'active') {
       if (!isAccountInNormalStatus(account)) return false
-    } else if (params.status === 'rate_limited') {
+    } else if (filters.status === 'rate_limited') {
       if (!isAccountRateLimited(account)) return false
-    } else if (params.status === 'temp_unschedulable') {
+    } else if (filters.status === 'temp_unschedulable') {
       if (!hasFutureTimestamp(account.temp_unschedulable_until)) return false
-    } else if (account.status !== params.status) {
+    } else if (filters.status === 'unschedulable') {
+      if (account.status !== 'active' || account.schedulable || isAccountRateLimited(account) || hasFutureTimestamp(account.temp_unschedulable_until)) return false
+    } else if (account.status !== filters.status) {
       return false
     }
   }
   if (!accountMatchesGroupFilter(account)) return false
   if (!accountMatchesPrivacyModeFilter(account)) return false
-  const search = String(params.search || '').trim().toLowerCase()
+  const search = String(filters.search || '').trim().toLowerCase()
   if (search && !account.name.toLowerCase().includes(search)) return false
   return true
 }
@@ -1574,14 +1660,7 @@ const handleExportData = async () => {
         ? { ids: selIds.value, includeProxies: includeProxyOnExport.value }
         : {
             includeProxies: includeProxyOnExport.value,
-            filters: {
-              platform: params.platform,
-              type: params.type,
-              status: params.status,
-              group: params.group,
-              search: params.search,
-              privacy_mode: params.privacy_mode
-            }
+            filters: buildAccountQueryFilters()
           }
     )
     const timestamp = formatExportTimestamp()

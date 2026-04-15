@@ -80,8 +80,7 @@ const pOpts = computed(() => [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
-  { value: 'antigravity', label: 'Antigravity' },
-  { value: 'sora', label: 'Sora' }
+  { value: 'antigravity', label: 'Antigravity' }
 ])
 
 const tOpts = computed(() => [
@@ -91,7 +90,6 @@ const tOpts = computed(() => [
   { value: 'apikey', label: t('admin.accounts.apiKey') },
   { value: 'bedrock', label: 'AWS Bedrock' }
 ])
-
 const privacyOpts = computed(() => [
   { value: '', label: t('admin.accounts.allPrivacyModes') },
   { value: '__unset__', label: t('admin.accounts.privacyUnset') },

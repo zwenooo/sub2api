@@ -399,7 +399,7 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_NonExhaustedSnapshotDoesN
 
 	select {
 	case resetAt := <-repo.rateLimitCh:
-		t.Fatalf("unexpected rate limit reset at: %v", resetAt)
+		t.Fatalf("不应写入运行时限流时间: %v", resetAt)
 	case <-time.After(200 * time.Millisecond):
 	}
 }
@@ -407,7 +407,6 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_NonExhaustedSnapshotDoesN
 func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ThrottlesExtraWrites(t *testing.T) {
 	repo := &openAICodexSnapshotAsyncRepo{
 		updateExtraCh: make(chan map[string]any, 2),
-		rateLimitCh:   make(chan time.Time, 2),
 	}
 	svc := &OpenAIGatewayService{
 		accountRepo:           repo,
@@ -488,7 +487,7 @@ func TestAdminService_ListAccounts_ExhaustedCodexExtraDoesNotBackfillRateLimit(t
 	}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	accounts, total, err := svc.ListAccounts(context.Background(), 1, 20, PlatformOpenAI, AccountTypeOAuth, "", "", 0, "")
+	accounts, total, err := svc.ListAccounts(context.Background(), 1, 20, PlatformOpenAI, AccountTypeOAuth, "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Equal(t, int64(1), total)
 	require.Len(t, accounts, 1)

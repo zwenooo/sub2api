@@ -474,15 +474,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { resolveCodexUsageWindow } from '@/utils/codexUsage'
+import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
+
+// Module-level cache shared across all AccountUsageCell instances
+const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
+const USAGE_CACHE_TTL = 30 * 1000
 
 const props = withDefaults(
   defineProps<{
@@ -500,14 +505,14 @@ const props = withDefaults(
 
 const { t } = useI18n()
 
+const unmounted = ref(false)
+onBeforeUnmount(() => { unmounted.value = true })
+
 type UsageLoadSource = 'passive' | 'active' | undefined
 type PendingUsageLoad = {
   source: UsageLoadSource
   force: boolean
 }
-
-const USAGE_CACHE_TTL_MS = 30 * 1000
-const usageInfoCache = new Map<number, { usageInfo: AccountUsageInfo; cachedAt: number }>()
 
 const loading = ref(false)
 const activeQueryLoading = ref(false)
@@ -1012,36 +1017,47 @@ const resolveDefaultUsageSource = (): UsageLoadSource => {
 }
 
 const hydrateUsageFromCache = () => {
-  const cached = usageInfoCache.get(props.account.id)
+  const cached = _usageCache.get(props.account.id)
   if (!cached) return false
-  if (Date.now() - cached.cachedAt > USAGE_CACHE_TTL_MS) {
-    usageInfoCache.delete(props.account.id)
+  if (Date.now() - cached.ts > USAGE_CACHE_TTL) {
+    _usageCache.delete(props.account.id)
     return false
   }
-  usageInfo.value = cached.usageInfo
+  usageInfo.value = cached.data
   error.value = null
   return true
 }
 
-const loadUsage = async (source?: 'passive' | 'active') => {
+const loadUsage = async (source?: 'passive' | 'active', bypassCache: boolean = false) => {
   if (!shouldFetchUsage.value) return
+
+  // Check cache
+  if (!bypassCache) {
+    const cached = _usageCache.get(props.account.id)
+    if (cached && Date.now() - cached.ts < USAGE_CACHE_TTL) {
+      usageInfo.value = cached.data
+      loading.value = false
+      return
+    }
+  }
 
   loading.value = true
   error.value = null
 
   try {
-    usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, source)
-    if (usageInfo.value) {
-      usageInfoCache.set(props.account.id, {
-        usageInfo: usageInfo.value,
-        cachedAt: Date.now()
-      })
+    const fetchFn = () => adminAPI.accounts.getUsage(props.account.id, source)
+    const result = await enqueueUsageRequest(props.account, fetchFn)
+    if (!unmounted.value) {
+      usageInfo.value = result
+      _usageCache.set(props.account.id, { data: result, ts: Date.now() })
     }
   } catch (e: any) {
-    error.value = t('common.error')
-    console.error('Failed to load usage:', e)
+    if (!unmounted.value) {
+      error.value = t('common.error')
+      console.error('Failed to load usage:', e)
+    }
   } finally {
-    loading.value = false
+    if (!unmounted.value) loading.value = false
   }
 }
 
@@ -1055,7 +1071,7 @@ const ensureUsageLoaded = async (request: PendingUsageLoad) => {
     return
   }
   pendingUsageLoad.value = null
-  await loadUsage(request.source)
+  await loadUsage(request.source, request.force)
 }
 
 const flushUsageLoadWhenVisible = () => {
@@ -1075,16 +1091,12 @@ const flushUsageLoadWhenVisible = () => {
     console.error('Failed to lazily load usage:', e)
   })
 }
-
 const loadActiveUsage = async () => {
   activeQueryLoading.value = true
   try {
     usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, 'active')
     if (usageInfo.value) {
-      usageInfoCache.set(props.account.id, {
-        usageInfo: usageInfo.value,
-        cachedAt: Date.now()
-      })
+      _usageCache.set(props.account.id, { data: usageInfo.value, ts: Date.now() })
     }
   } catch (e: any) {
     console.error('Failed to load active usage:', e)
@@ -1241,6 +1253,7 @@ watch(
     if (nextToken === prevToken) return
     if (!shouldFetchUsage.value) return
 
+    _usageCache.delete(props.account.id)
     ensureUsageLoaded({
       source: resolveDefaultUsageSource(),
       force: true

@@ -467,19 +467,18 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		return nil, nil, err
 	}
 
-	accounts, err := q.
+	accountsQuery := q.
 		Offset(params.Offset()).
-		Limit(params.Limit()).
-		Order(func(s *entsql.Selector) {
-			rl := s.C(dbaccount.FieldRateLimitResetAt)
-			lu := s.C(dbaccount.FieldLastUsedAt)
-			// Rate-limited accounts (reset_at in the future) sink to the bottom.
-			s.OrderExpr(entsql.Expr("CASE WHEN " + rl + " IS NOT NULL AND " + rl + " > NOW() THEN 1 ELSE 0 END"))
-			// Most recently used accounts first; never-used accounts sink below active ones.
-			s.OrderExpr(entsql.Expr(lu + " DESC NULLS LAST"))
-			s.OrderBy(entsql.Desc(s.C(dbaccount.FieldID)))
-		}).
-		All(ctx)
+		Limit(params.Limit())
+	if strings.TrimSpace(params.SortBy) == "" {
+		accountsQuery = applyDefaultAccountListOrder(accountsQuery)
+	} else {
+		for _, order := range accountListOrder(params) {
+			accountsQuery = accountsQuery.Order(order)
+		}
+	}
+
+	accounts, err := accountsQuery.All(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -492,15 +491,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 }
 
 func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {
-	accounts, err := applyAccountListFilters(r.client.Account.Query(), platform, accountType, status, search, groupID, privacyMode).
-		Order(func(s *entsql.Selector) {
-			rl := s.C(dbaccount.FieldRateLimitResetAt)
-			lu := s.C(dbaccount.FieldLastUsedAt)
-			s.OrderExpr(entsql.Expr("CASE WHEN " + rl + " IS NOT NULL AND " + rl + " > NOW() THEN 1 ELSE 0 END"))
-			s.OrderExpr(entsql.Expr(lu + " DESC NULLS LAST"))
-			s.OrderBy(entsql.Desc(s.C(dbaccount.FieldID)))
-		}).
-		All(ctx)
+	accounts, err := applyDefaultAccountListOrder(applyAccountListFilters(r.client.Account.Query(), platform, accountType, status, search, groupID, privacyMode)).All(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -514,6 +505,60 @@ func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, ac
 		result = append(result, *out)
 	}
 	return result, nil
+}
+
+func applyDefaultAccountListOrder(q *dbent.AccountQuery) *dbent.AccountQuery {
+	return q.Order(func(s *entsql.Selector) {
+		rl := s.C(dbaccount.FieldRateLimitResetAt)
+		lu := s.C(dbaccount.FieldLastUsedAt)
+		s.OrderExpr(entsql.Expr("CASE WHEN " + rl + " IS NOT NULL AND " + rl + " > NOW() THEN 1 ELSE 0 END"))
+		s.OrderExpr(entsql.Expr(lu + " DESC NULLS LAST"))
+		s.OrderBy(entsql.Desc(s.C(dbaccount.FieldID)))
+	})
+}
+
+func accountListOrder(params pagination.PaginationParams) []func(*entsql.Selector) {
+	sortBy := strings.ToLower(strings.TrimSpace(params.SortBy))
+	sortOrder := params.NormalizedSortOrder(pagination.SortOrderAsc)
+
+	field := dbaccount.FieldName
+	defaultOrder := true
+	switch sortBy {
+	case "", "name":
+		field = dbaccount.FieldName
+	case "id":
+		field = dbaccount.FieldID
+		defaultOrder = false
+	case "status":
+		field = dbaccount.FieldStatus
+		defaultOrder = false
+	case "schedulable":
+		field = dbaccount.FieldSchedulable
+		defaultOrder = false
+	case "priority":
+		field = dbaccount.FieldPriority
+		defaultOrder = false
+	case "rate_multiplier":
+		field = dbaccount.FieldRateMultiplier
+		defaultOrder = false
+	case "last_used_at":
+		field = dbaccount.FieldLastUsedAt
+		defaultOrder = false
+	case "expires_at":
+		field = dbaccount.FieldExpiresAt
+		defaultOrder = false
+	case "created_at":
+		field = dbaccount.FieldCreatedAt
+		defaultOrder = false
+	}
+
+	if sortOrder == pagination.SortOrderDesc {
+		return []func(*entsql.Selector){dbent.Desc(field), dbent.Desc(dbaccount.FieldID)}
+	}
+	if defaultOrder {
+		return []func(*entsql.Selector){dbent.Asc(dbaccount.FieldName), dbent.Asc(dbaccount.FieldID)}
+	}
+	return []func(*entsql.Selector){dbent.Asc(field), dbent.Asc(dbaccount.FieldID)}
 }
 
 func (r *accountRepository) ListByGroup(ctx context.Context, groupID int64) ([]service.Account, error) {
@@ -1771,20 +1816,13 @@ func itoa(v int) string {
 }
 
 // FindByExtraField 根据 extra 字段中的键值对查找账号。
-// 该方法限定 platform='sora'，避免误查询其他平台的账号。
 // 使用 PostgreSQL JSONB @> 操作符进行高效查询（需要 GIN 索引支持）。
 //
-// 应用场景：查找通过 linked_openai_account_id 关联的 Sora 账号。
-//
 // FindByExtraField finds accounts by key-value pairs in the extra field.
-// Limited to platform='sora' to avoid querying accounts from other platforms.
 // Uses PostgreSQL JSONB @> operator for efficient queries (requires GIN index).
-//
-// Use case: Finding Sora accounts linked via linked_openai_account_id.
 func (r *accountRepository) FindByExtraField(ctx context.Context, key string, value any) ([]service.Account, error) {
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.PlatformEQ("sora"), // 限定平台为 sora
 			dbaccount.DeletedAtIsNil(),
 			func(s *entsql.Selector) {
 				path := sqljson.Path(key)
