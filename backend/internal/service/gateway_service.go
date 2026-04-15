@@ -1651,22 +1651,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							}
 						}
 
-						waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, []accountWithLoad{*item}, s.concurrencyService, cfg.StickySessionMaxWaiting, preferOAuth, cfg.FallbackSelectionMode, strategy)
-						for _, waitItem := range waitCandidates {
-							if !waitItem.waitQueueOverflow && !s.checkAndRegisterSession(ctx, waitItem.account, sessionHash) {
-								continue
-							}
-							if s.debugModelRoutingEnabled() {
-								logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed wait: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), waitItem.account.ID)
-							}
-							return s.newSelectionResult(ctx, waitItem.account, false, nil, &AccountWaitPlan{
-								AccountID:      waitItem.account.ID,
-								MaxConcurrency: waitItem.account.Concurrency,
-								Timeout:        cfg.StickySessionWaitTimeout,
-								MaxWaiting:     cfg.StickySessionMaxWaiting,
-							})
-						}
-
 						next := make([]accountWithLoad, 0, len(remaining)-1)
 						for _, candidate := range remaining {
 							if candidate.account.ID != item.account.ID {
@@ -1890,21 +1874,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.account.ID, stickySessionTTL)
 					}
 					return s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
-				}
-			}
-
-			if strategy == GatewaySchedulingStrategySingleExhaustion {
-				waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, []accountWithLoad{*selected}, s.concurrencyService, cfg.FallbackMaxWaiting, preferOAuth, cfg.FallbackSelectionMode, strategy)
-				for _, item := range waitCandidates {
-					if !item.waitQueueOverflow && !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
-						continue
-					}
-					return s.newSelectionResult(ctx, item.account, false, nil, &AccountWaitPlan{
-						AccountID:      item.account.ID,
-						MaxConcurrency: item.account.Concurrency,
-						Timeout:        cfg.FallbackWaitTimeout,
-						MaxWaiting:     cfg.FallbackMaxWaiting,
-					})
 				}
 			}
 
