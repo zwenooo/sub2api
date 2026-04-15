@@ -4702,6 +4702,12 @@ export default {
       scheduling: {
         title: '网关调度设置',
         description: '控制 API Key 的调度行为',
+        strategy: '调度规则',
+        strategyHint: '选择请求在多个账号之间的分配方式。',
+        strategyBalanced: '均衡调度',
+        strategyBalancedHint: '按优先级、实时负载和最久未用顺序分摊请求，尽量把流量打散。',
+        strategySingleExhaustion: '单号用尽',
+        strategySingleExhaustionHint: '尽量连续使用同一个账号，直到该账号进入限流、错误或不可调度状态后再切到下一个账号。',
         allowUngroupedKey: '允许未分组 Key 调度',
         allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。'
       },

@@ -329,6 +329,7 @@ type OpenAIGatewayService struct {
 	resolver              *ModelPricingResolver
 	channelService        *ChannelService
 	balanceNotifyService  *BalanceNotifyService
+	settingService        *SettingService
 
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
@@ -368,6 +369,7 @@ func NewOpenAIGatewayService(
 	resolver *ModelPricingResolver,
 	channelService *ChannelService,
 	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -399,6 +401,7 @@ func NewOpenAIGatewayService(
 		resolver:              resolver,
 		channelService:        channelService,
 		balanceNotifyService:  balanceNotifyService,
+		settingService:        settingService,
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 	}
@@ -1399,6 +1402,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	cfg := s.schedulingConfig()
+	strategy := s.gatewaySchedulingStrategy(ctx)
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
@@ -1480,13 +1484,14 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			waitInputs = append(waitInputs, accountWithLoad{account: account})
 		}
 
-		waitCandidates := rankWaitPlanCandidates(
+		waitCandidates := rankWaitPlanCandidatesByStrategy(
 			ctx,
 			waitInputs,
 			s.concurrencyService,
 			cfg.FallbackMaxWaiting,
 			false,
 			cfg.FallbackSelectionMode,
+			strategy,
 		)
 		for _, item := range waitCandidates {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
@@ -1604,7 +1609,11 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
 		ordered := append([]*Account(nil), candidates...)
-		sortAccountsByPriorityAndLastUsed(ordered, false)
+		if strategy == GatewaySchedulingStrategySingleExhaustion {
+			sortAccountsByPriorityAndMostRecentlyUsed(ordered, false)
+		} else {
+			sortAccountsByPriorityAndLastUsed(ordered, false)
+		}
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel)
 			if fresh == nil {
@@ -1637,41 +1646,87 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		}
 
 		if len(available) > 0 {
-			sort.SliceStable(available, func(i, j int) bool {
-				a, b := available[i], available[j]
-				if a.account.Priority != b.account.Priority {
-					return a.account.Priority < b.account.Priority
-				}
-				if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-					return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-				}
-				switch {
-				case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-					return true
-				case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-					return false
-				case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-					return false
-				default:
-					return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-				}
-			})
-			shuffleWithinSortGroups(available)
-
-			for _, item := range available {
-				fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
-				if fresh == nil {
-					continue
-				}
-				if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
-					continue
-				}
-				result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
-				if err == nil && result.Acquired {
-					if sessionHash != "" {
-						_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
+			if strategy == GatewaySchedulingStrategySingleExhaustion {
+				remaining := append([]accountWithLoad(nil), available...)
+				for len(remaining) > 0 {
+					item := selectBySingleExhaustion(remaining, false)
+					if item == nil {
+						break
 					}
-					return s.newSelectionResult(ctx, fresh, true, result.ReleaseFunc, nil)
+
+					fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
+					if fresh == nil {
+						remaining = removeAccountWithLoadByID(remaining, item.account.ID)
+						continue
+					}
+					if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
+						remaining = removeAccountWithLoadByID(remaining, item.account.ID)
+						continue
+					}
+					result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
+					if err == nil && result.Acquired {
+						if sessionHash != "" {
+							_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
+						}
+						return s.newSelectionResult(ctx, fresh, true, result.ReleaseFunc, nil)
+					}
+
+					waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, []accountWithLoad{{account: fresh, loadInfo: item.loadInfo}}, s.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode, strategy)
+					for _, waitItem := range waitCandidates {
+						waitFresh := s.resolveFreshSchedulableOpenAIAccount(ctx, waitItem.account, requestedModel)
+						if waitFresh == nil {
+							continue
+						}
+						if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, waitFresh, requestedModel) {
+							continue
+						}
+						return s.newSelectionResult(ctx, waitFresh, false, nil, &AccountWaitPlan{
+							AccountID:      waitFresh.ID,
+							MaxConcurrency: waitFresh.Concurrency,
+							Timeout:        cfg.FallbackWaitTimeout,
+							MaxWaiting:     cfg.FallbackMaxWaiting,
+						})
+					}
+
+					remaining = removeAccountWithLoadByID(remaining, item.account.ID)
+				}
+			} else {
+				sort.SliceStable(available, func(i, j int) bool {
+					a, b := available[i], available[j]
+					if a.account.Priority != b.account.Priority {
+						return a.account.Priority < b.account.Priority
+					}
+					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+					}
+					switch {
+					case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+						return true
+					case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+						return false
+					case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+						return false
+					default:
+						return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+					}
+				})
+				shuffleWithinSortGroups(available)
+
+				for _, item := range available {
+					fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
+					if fresh == nil {
+						continue
+					}
+					if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
+						continue
+					}
+					result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
+					if err == nil && result.Acquired {
+						if sessionHash != "" {
+							_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
+						}
+						return s.newSelectionResult(ctx, fresh, true, result.ReleaseFunc, nil)
+					}
 				}
 			}
 		}
@@ -1685,7 +1740,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			loadInfo: loadMap[acc.ID],
 		})
 	}
-	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode)
+	waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode, strategy)
 	for _, item := range waitCandidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
 		if fresh == nil {
@@ -1843,6 +1898,13 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 		LoadBatchEnabled:         true,
 		SlotCleanupInterval:      30 * time.Second,
 	}
+}
+
+func (s *OpenAIGatewayService) gatewaySchedulingStrategy(ctx context.Context) string {
+	if s != nil && s.settingService != nil {
+		return s.settingService.GetGatewaySchedulingStrategy(ctx)
+	}
+	return GatewaySchedulingStrategyBalanced
 }
 
 // GetAccessToken gets the access token for an OpenAI account
@@ -5217,6 +5279,7 @@ func codexRateLimitResetAtFromExtra(extra map[string]any, now time.Time) *time.T
 	}
 	return nil
 }
+
 // updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
 func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot) {
 	if snapshot == nil {

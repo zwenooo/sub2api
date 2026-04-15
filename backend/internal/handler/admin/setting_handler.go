@@ -170,6 +170,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                 settings.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                 settings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:          settings.AllowUngroupedKeyScheduling,
+		GatewaySchedulingStrategy:            settings.GatewaySchedulingStrategy,
 		BackendModeEnabled:                   settings.BackendModeEnabled,
 		EnableFingerprintUnification:         settings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:            settings.EnableMetadataPassthrough,
@@ -301,7 +302,8 @@ type UpdateSettingsRequest struct {
 	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
-	AllowUngroupedKeyScheduling bool `json:"allow_ungrouped_key_scheduling"`
+	AllowUngroupedKeyScheduling bool   `json:"allow_ungrouped_key_scheduling"`
+	GatewaySchedulingStrategy   string `json:"gateway_scheduling_strategy"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
@@ -782,6 +784,17 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	gatewaySchedulingStrategy := strings.TrimSpace(req.GatewaySchedulingStrategy)
+	switch {
+	case gatewaySchedulingStrategy == "":
+		gatewaySchedulingStrategy = previousSettings.GatewaySchedulingStrategy
+	case !service.IsGatewaySchedulingStrategyValid(gatewaySchedulingStrategy):
+		response.Error(c, http.StatusBadRequest, "gateway_scheduling_strategy must be one of: balanced, single_exhaustion")
+		return
+	default:
+		gatewaySchedulingStrategy = service.NormalizeGatewaySchedulingStrategy(gatewaySchedulingStrategy)
+	}
+
 	settings := &service.SystemSettings{
 		RegistrationEnabled:              req.RegistrationEnabled,
 		EmailVerifyEnabled:               req.EmailVerifyEnabled,
@@ -854,6 +867,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion:             req.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:             req.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:      req.AllowUngroupedKeyScheduling,
+		GatewaySchedulingStrategy:        gatewaySchedulingStrategy,
 		BackendModeEnabled:               req.BackendModeEnabled,
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
@@ -1071,6 +1085,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                 updatedSettings.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                 updatedSettings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:          updatedSettings.AllowUngroupedKeyScheduling,
+		GatewaySchedulingStrategy:            updatedSettings.GatewaySchedulingStrategy,
 		BackendModeEnabled:                   updatedSettings.BackendModeEnabled,
 		EnableFingerprintUnification:         updatedSettings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:            updatedSettings.EnableMetadataPassthrough,
@@ -1345,6 +1360,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.AllowUngroupedKeyScheduling != after.AllowUngroupedKeyScheduling {
 		changed = append(changed, "allow_ungrouped_key_scheduling")
+	}
+	if before.GatewaySchedulingStrategy != after.GatewaySchedulingStrategy {
+		changed = append(changed, "gateway_scheduling_strategy")
 	}
 	if before.BackendModeEnabled != after.BackendModeEnabled {
 		changed = append(changed, "backend_mode_enabled")

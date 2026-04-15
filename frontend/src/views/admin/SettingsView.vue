@@ -1793,7 +1793,55 @@
             </p>
           </div>
           <div class="p-6">
-            <div class="flex items-center justify-between">
+            <div class="space-y-5">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.scheduling.strategy') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.scheduling.strategyHint') }}
+                </p>
+              </div>
+              <fieldset class="space-y-3">
+                <label
+                  class="flex cursor-pointer items-start gap-3 rounded-lg border border-gray-200 px-4 py-3 transition hover:border-primary-300 dark:border-dark-600 dark:hover:border-primary-500"
+                >
+                  <input
+                    v-model="form.gateway_scheduling_strategy"
+                    type="radio"
+                    value="balanced"
+                    class="mt-1 h-4 w-4"
+                  />
+                  <div>
+                    <div class="text-sm font-medium text-gray-800 dark:text-gray-100">
+                      {{ t('admin.settings.scheduling.strategyBalanced') }}
+                    </div>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.scheduling.strategyBalancedHint') }}
+                    </p>
+                  </div>
+                </label>
+                <label
+                  class="flex cursor-pointer items-start gap-3 rounded-lg border border-gray-200 px-4 py-3 transition hover:border-primary-300 dark:border-dark-600 dark:hover:border-primary-500"
+                >
+                  <input
+                    v-model="form.gateway_scheduling_strategy"
+                    type="radio"
+                    value="single_exhaustion"
+                    class="mt-1 h-4 w-4"
+                  />
+                  <div>
+                    <div class="text-sm font-medium text-gray-800 dark:text-gray-100">
+                      {{ t('admin.settings.scheduling.strategySingleExhaustion') }}
+                    </div>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.scheduling.strategySingleExhaustionHint') }}
+                    </p>
+                  </div>
+                </label>
+              </fieldset>
+            </div>
+            <div class="mt-5 flex items-center justify-between">
               <div>
                 <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
                   {{ t('admin.settings.scheduling.allowUngroupedKey') }}
@@ -3246,6 +3294,7 @@ const form = reactive<SettingsForm>({
   max_claude_code_version: '',
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
+  gateway_scheduling_strategy: 'balanced',
   // Gateway forwarding behavior
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
@@ -3826,6 +3875,7 @@ async function saveSettings() {
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
+      gateway_scheduling_strategy: form.gateway_scheduling_strategy,
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,

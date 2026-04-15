@@ -4540,6 +4540,12 @@ export default {
       scheduling: {
         title: 'Gateway Scheduling Settings',
         description: 'Control API Key scheduling behavior',
+        strategy: 'Scheduling Rule',
+        strategyHint: 'Choose how requests are distributed across accounts.',
+        strategyBalanced: 'Balanced Scheduling',
+        strategyBalancedHint: 'Spread requests by priority, real-time load, and least-recently-used order.',
+        strategySingleExhaustion: 'Single Account Exhaustion',
+        strategySingleExhaustionHint: 'Keep sending requests to the same account until it becomes rate-limited, errors, or otherwise unschedulable, then move to the next one.',
         allowUngroupedKey: 'Allow Ungrouped Key Scheduling',
         allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.'
       },

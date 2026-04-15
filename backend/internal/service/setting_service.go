@@ -94,6 +94,18 @@ const gatewayForwardingCacheTTL = 60 * time.Second
 const gatewayForwardingErrorTTL = 5 * time.Second
 const gatewayForwardingDBTimeout = 5 * time.Second
 
+type cachedGatewaySchedulingStrategy struct {
+	strategy  string
+	expiresAt int64 // unix nano
+}
+
+var gatewaySchedulingStrategyCache atomic.Value // *cachedGatewaySchedulingStrategy
+var gatewaySchedulingStrategySF singleflight.Group
+
+const gatewaySchedulingStrategyCacheTTL = 60 * time.Second
+const gatewaySchedulingStrategyErrorTTL = 5 * time.Second
+const gatewaySchedulingStrategyDBTimeout = 5 * time.Second
+
 // DefaultSubscriptionGroupReader validates group references used by default subscriptions.
 type DefaultSubscriptionGroupReader interface {
 	GetByID(ctx context.Context, id int64) (*Group, error)
@@ -618,6 +630,7 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 
 	// 分组隔离
 	updates[SettingKeyAllowUngroupedKeyScheduling] = strconv.FormatBool(settings.AllowUngroupedKeyScheduling)
+	updates[SettingKeyGatewaySchedulingStrategy] = NormalizeGatewaySchedulingStrategy(settings.GatewaySchedulingStrategy)
 
 	// Backend Mode
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
@@ -654,6 +667,11 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 			metadataPassthrough:    settings.EnableMetadataPassthrough,
 			cchSigning:             settings.EnableCCHSigning,
 			expiresAt:              time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
+		})
+		gatewaySchedulingStrategySF.Forget("gateway_scheduling_strategy")
+		gatewaySchedulingStrategyCache.Store(&cachedGatewaySchedulingStrategy{
+			strategy:  NormalizeGatewaySchedulingStrategy(settings.GatewaySchedulingStrategy),
+			expiresAt: time.Now().Add(gatewaySchedulingStrategyCacheTTL).UnixNano(),
 		})
 		if s.onUpdate != nil {
 			s.onUpdate() // Invalidate cache after settings update
@@ -810,6 +828,54 @@ func (s *SettingService) GetGatewayForwardingSettings(ctx context.Context) (fing
 		return r.fp, r.mp, r.cch
 	}
 	return true, false, false // fail-open defaults
+}
+
+func (s *SettingService) GetGatewaySchedulingStrategy(ctx context.Context) string {
+	if cached, ok := gatewaySchedulingStrategyCache.Load().(*cachedGatewaySchedulingStrategy); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.strategy
+		}
+	}
+
+	result, _, _ := gatewaySchedulingStrategySF.Do("gateway_scheduling_strategy", func() (any, error) {
+		if cached, ok := gatewaySchedulingStrategyCache.Load().(*cachedGatewaySchedulingStrategy); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached.strategy, nil
+			}
+		}
+
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gatewaySchedulingStrategyDBTimeout)
+		defer cancel()
+
+		value, err := s.settingRepo.GetValue(dbCtx, SettingKeyGatewaySchedulingStrategy)
+		if err != nil {
+			if errors.Is(err, ErrSettingNotFound) {
+				gatewaySchedulingStrategyCache.Store(&cachedGatewaySchedulingStrategy{
+					strategy:  GatewaySchedulingStrategyBalanced,
+					expiresAt: time.Now().Add(gatewaySchedulingStrategyCacheTTL).UnixNano(),
+				})
+				return GatewaySchedulingStrategyBalanced, nil
+			}
+
+			slog.Warn("failed to get gateway scheduling strategy", "error", err)
+			gatewaySchedulingStrategyCache.Store(&cachedGatewaySchedulingStrategy{
+				strategy:  GatewaySchedulingStrategyBalanced,
+				expiresAt: time.Now().Add(gatewaySchedulingStrategyErrorTTL).UnixNano(),
+			})
+			return GatewaySchedulingStrategyBalanced, nil
+		}
+
+		strategy := NormalizeGatewaySchedulingStrategy(value)
+		gatewaySchedulingStrategyCache.Store(&cachedGatewaySchedulingStrategy{
+			strategy:  strategy,
+			expiresAt: time.Now().Add(gatewaySchedulingStrategyCacheTTL).UnixNano(),
+		})
+		return strategy, nil
+	})
+	if strategy, ok := result.(string); ok && strategy != "" {
+		return strategy
+	}
+	return GatewaySchedulingStrategyBalanced
 }
 
 // IsEmailVerifyEnabled 检查是否开启邮件验证
@@ -974,6 +1040,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// 分组隔离（默认不允许未分组 Key 调度）
 		SettingKeyAllowUngroupedKeyScheduling: "false",
+		SettingKeyGatewaySchedulingStrategy:   GatewaySchedulingStrategyBalanced,
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -1246,6 +1313,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// 分组隔离
 	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
+	result.GatewaySchedulingStrategy = NormalizeGatewaySchedulingStrategy(settings[SettingKeyGatewaySchedulingStrategy])
 
 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false, cch_signing=false)
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {

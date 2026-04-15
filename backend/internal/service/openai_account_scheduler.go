@@ -441,6 +441,35 @@ func filterOpenAICandidatesByMinPriority(candidates []openAIAccountCandidateScor
 	return filtered
 }
 
+func selectOpenAISingleExhaustionCandidate(candidates []openAIAccountCandidateScore) *openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return nil
+	}
+	ordered := append([]openAIAccountCandidateScore(nil), candidates...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		switch {
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+			return false
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+			return true
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt != nil && !a.account.LastUsedAt.Equal(*b.account.LastUsedAt):
+			return a.account.LastUsedAt.After(*b.account.LastUsedAt)
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		}
+		return a.account.ID < b.account.ID
+	})
+	return &ordered[0]
+}
+
 func scoreOpenAICandidates(candidates []openAIAccountCandidateScore, weights GatewayOpenAIWSSchedulerScoreWeightsView) {
 	if len(candidates) == 0 {
 		return
@@ -734,40 +763,32 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		})
 	}
 	loadSkew := calcLoadSkewByMoments(loadRateSum, loadRateSumSquares, len(candidates))
+	strategy := s.service.gatewaySchedulingStrategy(ctx)
+	cfg := s.service.schedulingConfig()
 
-	weights := s.service.openAIWSSchedulerWeights()
-	remaining := append([]openAIAccountCandidateScore(nil), candidates...)
-	topKLimit := s.service.openAIWSLBTopK()
-	for len(remaining) > 0 {
-		priorityBatch := filterOpenAICandidatesByMinPriority(remaining)
-		scoreOpenAICandidates(priorityBatch, weights)
+	if strategy == GatewaySchedulingStrategySingleExhaustion {
+		remaining := append([]openAIAccountCandidateScore(nil), candidates...)
+		for len(remaining) > 0 {
+			priorityBatch := filterOpenAICandidatesByMinPriority(remaining)
+			selected := selectOpenAISingleExhaustionCandidate(priorityBatch)
+			if selected == nil {
+				break
+			}
 
-		topK := topKLimit
-		if topK > len(priorityBatch) {
-			topK = len(priorityBatch)
-		}
-		if topK <= 0 {
-			topK = 1
-		}
-
-		rankedCandidates := selectTopKOpenAICandidates(priorityBatch, topK)
-		selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
-
-		for i := 0; i < len(selectionOrder); i++ {
-			candidate := selectionOrder[i]
-			fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
+			fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, selected.account, req.RequestedModel)
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
-				remaining = removeOpenAICandidatesByID(remaining, candidate.account.ID)
+				remaining = removeOpenAICandidatesByID(remaining, selected.account.ID)
 				continue
 			}
 			fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel)
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
-				remaining = removeOpenAICandidatesByID(remaining, candidate.account.ID)
+				remaining = removeOpenAICandidatesByID(remaining, selected.account.ID)
 				continue
 			}
+
 			result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 			if acquireErr != nil {
-				return nil, len(candidates), topK, loadSkew, acquireErr
+				return nil, len(candidates), 1, loadSkew, acquireErr
 			}
 			if result != nil && result.Acquired {
 				if req.SessionHash != "" {
@@ -777,13 +798,80 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 					Account:     fresh,
 					Acquired:    true,
 					ReleaseFunc: result.ReleaseFunc,
-				}, len(candidates), topK, loadSkew, nil
+				}, len(candidates), 1, loadSkew, nil
 			}
+
+			waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, []accountWithLoad{{account: fresh, loadInfo: selected.loadInfo}}, s.service.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode, strategy)
+			for _, item := range waitCandidates {
+				waitFresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, item.account, req.RequestedModel)
+				if waitFresh == nil || !s.isAccountTransportCompatible(waitFresh, req.RequiredTransport) {
+					continue
+				}
+				return &AccountSelectionResult{
+					Account: waitFresh,
+					WaitPlan: &AccountWaitPlan{
+						AccountID:      waitFresh.ID,
+						MaxConcurrency: waitFresh.Concurrency,
+						Timeout:        cfg.FallbackWaitTimeout,
+						MaxWaiting:     cfg.FallbackMaxWaiting,
+					},
+				}, len(candidates), 1, loadSkew, nil
+			}
+
 			remaining = removeOpenAICandidatesByID(remaining, fresh.ID)
 		}
 	}
 
-	cfg := s.service.schedulingConfig()
+	if strategy != GatewaySchedulingStrategySingleExhaustion {
+		weights := s.service.openAIWSSchedulerWeights()
+		remaining := append([]openAIAccountCandidateScore(nil), candidates...)
+		topKLimit := s.service.openAIWSLBTopK()
+		for len(remaining) > 0 {
+			priorityBatch := filterOpenAICandidatesByMinPriority(remaining)
+			scoreOpenAICandidates(priorityBatch, weights)
+
+			topK := topKLimit
+			if topK > len(priorityBatch) {
+				topK = len(priorityBatch)
+			}
+			if topK <= 0 {
+				topK = 1
+			}
+
+			rankedCandidates := selectTopKOpenAICandidates(priorityBatch, topK)
+			selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
+
+			for i := 0; i < len(selectionOrder); i++ {
+				candidate := selectionOrder[i]
+				fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
+				if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+					remaining = removeOpenAICandidatesByID(remaining, candidate.account.ID)
+					continue
+				}
+				fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel)
+				if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+					remaining = removeOpenAICandidatesByID(remaining, candidate.account.ID)
+					continue
+				}
+				result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
+				if acquireErr != nil {
+					return nil, len(candidates), topK, loadSkew, acquireErr
+				}
+				if result != nil && result.Acquired {
+					if req.SessionHash != "" {
+						_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
+					}
+					return &AccountSelectionResult{
+						Account:     fresh,
+						Acquired:    true,
+						ReleaseFunc: result.ReleaseFunc,
+					}, len(candidates), topK, loadSkew, nil
+				}
+				remaining = removeOpenAICandidatesByID(remaining, fresh.ID)
+			}
+		}
+	}
+
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	waitInputs := make([]accountWithLoad, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -792,7 +880,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			loadInfo: candidate.loadInfo,
 		})
 	}
-	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.service.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode)
+	waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, waitInputs, s.service.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode, strategy)
 	for _, item := range waitCandidates {
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, item.account, req.RequestedModel)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {

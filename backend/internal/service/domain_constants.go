@@ -247,6 +247,8 @@ const (
 
 	// SettingKeyAllowUngroupedKeyScheduling 允许未分组 API Key 调度（默认 false：未分组 Key 返回 403）
 	SettingKeyAllowUngroupedKeyScheduling = "allow_ungrouped_key_scheduling"
+	// SettingKeyGatewaySchedulingStrategy 网关账号调度策略
+	SettingKeyGatewaySchedulingStrategy = "gateway_scheduling_strategy"
 
 	// SettingKeyAccountRuleForwardMaxAttempts 统一账号规则转发重试次数
 	SettingKeyAccountRuleForwardMaxAttempts = "account_rule_forward_max_attempts"
