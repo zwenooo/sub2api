@@ -9,7 +9,7 @@ const (
 
 func canonicalGatewaySchedulingStrategy(strategy string) string {
 	switch strings.ToLower(strings.TrimSpace(strategy)) {
-	case "", GatewaySchedulingStrategyBalanced:
+	case GatewaySchedulingStrategyBalanced:
 		return GatewaySchedulingStrategyBalanced
 	case GatewaySchedulingStrategySingleExhaustion:
 		return GatewaySchedulingStrategySingleExhaustion
@@ -19,6 +19,9 @@ func canonicalGatewaySchedulingStrategy(strategy string) string {
 }
 
 func NormalizeGatewaySchedulingStrategy(strategy string) string {
+	if strings.TrimSpace(strategy) == "" {
+		return GatewaySchedulingStrategyBalanced
+	}
 	if normalized := canonicalGatewaySchedulingStrategy(strategy); normalized != "" {
 		return normalized
 	}
@@ -26,5 +29,8 @@ func NormalizeGatewaySchedulingStrategy(strategy string) string {
 }
 
 func IsGatewaySchedulingStrategyValid(strategy string) bool {
+	if strings.TrimSpace(strategy) == "" {
+		return false
+	}
 	return canonicalGatewaySchedulingStrategy(strategy) != ""
 }
