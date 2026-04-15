@@ -103,7 +103,6 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	accountRepository := repository.NewAccountRepository(client, db, schedulerCache)
 	accountRuleRepository := repository.NewAccountRuleRepository(db)
 	accountRuleService := service.NewAccountRuleService(accountRuleRepository, accountRepository, settingService)
-	proxyRepository := repository.NewProxyRepository(client, db)
 	proxyExitInfoProber := repository.NewProxyExitInfoProber(configConfig)
 	proxyLatencyCache := repository.NewProxyLatencyCache(redisClient)
 	privacyClientFactory := providePrivacyClientFactory()
