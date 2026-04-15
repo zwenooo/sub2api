@@ -2783,6 +2783,47 @@ func removeAccountWithLoadByID(accounts []accountWithLoad, accountID int64) []ac
 	return filtered
 }
 
+func shouldPreferAccountByStrategy(candidate, current *Account, preferOAuth bool, strategy string) bool {
+	if candidate == nil {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	if candidate.Priority != current.Priority {
+		return candidate.Priority < current.Priority
+	}
+
+	switch NormalizeGatewaySchedulingStrategy(strategy) {
+	case GatewaySchedulingStrategySingleExhaustion:
+		switch {
+		case candidate.LastUsedAt == nil && current.LastUsedAt != nil:
+			return false
+		case candidate.LastUsedAt != nil && current.LastUsedAt == nil:
+			return true
+		case candidate.LastUsedAt != nil && current.LastUsedAt != nil && !candidate.LastUsedAt.Equal(*current.LastUsedAt):
+			return candidate.LastUsedAt.After(*current.LastUsedAt)
+		}
+		if preferOAuth && candidate.Type != current.Type {
+			return candidate.Type == AccountTypeOAuth
+		}
+		return candidate.ID < current.ID
+	default:
+		switch {
+		case candidate.LastUsedAt == nil && current.LastUsedAt != nil:
+			return true
+		case candidate.LastUsedAt != nil && current.LastUsedAt == nil:
+			return false
+		case candidate.LastUsedAt != nil && current.LastUsedAt != nil && !candidate.LastUsedAt.Equal(*current.LastUsedAt):
+			return candidate.LastUsedAt.Before(*current.LastUsedAt)
+		}
+		if preferOAuth && candidate.Type != current.Type {
+			return candidate.Type == AccountTypeOAuth
+		}
+		return false
+	}
+}
+
 func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 	sort.SliceStable(accounts, func(i, j int) bool {
 		a, b := accounts[i], accounts[j]
@@ -3251,6 +3292,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 func (s *GatewayService) selectAccountForModelWithPlatformWithBinding(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, platform string, bindSticky bool) (*Account, error) {
 	preferOAuth := platform == PlatformGemini
+	strategy := s.gatewaySchedulingStrategy(ctx)
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
 
 	// require_privacy_set: 获取分组信息
@@ -3354,27 +3396,8 @@ func (s *GatewayService) selectAccountForModelWithPlatformWithBinding(ctx contex
 			if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 				continue
 			}
-			if selected == nil {
+			if shouldPreferAccountByStrategy(acc, selected, preferOAuth, strategy) {
 				selected = acc
-				continue
-			}
-			if acc.Priority < selected.Priority {
-				selected = acc
-			} else if acc.Priority == selected.Priority {
-				switch {
-				case acc.LastUsedAt == nil && selected.LastUsedAt != nil:
-					selected = acc
-				case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
-					// keep selected (never used is preferred)
-				case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-					if preferOAuth && acc.Type != selected.Type && acc.Type == AccountTypeOAuth {
-						selected = acc
-					}
-				default:
-					if acc.LastUsedAt.Before(*selected.LastUsedAt) {
-						selected = acc
-					}
-				}
 			}
 		}
 
@@ -3429,7 +3452,7 @@ func (s *GatewayService) selectAccountForModelWithPlatformWithBinding(ctx contex
 	ctx = s.withWindowCostPrefetch(ctx, accounts)
 	ctx = s.withRPMPrefetch(ctx, accounts)
 
-	// 3. 按优先级+最久未用选择（考虑模型支持）
+	// 3. 按优先级+调度策略选择（考虑模型支持）
 	// needsUpstreamCheck 仅在主选择循环中使用；粘性会话命中时跳过此检查，
 	// 因为粘性会话优先保持连接一致性，且 upstream 计费基准极少使用。
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
@@ -3471,27 +3494,8 @@ func (s *GatewayService) selectAccountForModelWithPlatformWithBinding(ctx contex
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 			continue
 		}
-		if selected == nil {
+		if shouldPreferAccountByStrategy(acc, selected, preferOAuth, strategy) {
 			selected = acc
-			continue
-		}
-		if acc.Priority < selected.Priority {
-			selected = acc
-		} else if acc.Priority == selected.Priority {
-			switch {
-			case acc.LastUsedAt == nil && selected.LastUsedAt != nil:
-				selected = acc
-			case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
-				// keep selected (never used is preferred)
-			case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-				if preferOAuth && acc.Type != selected.Type && acc.Type == AccountTypeOAuth {
-					selected = acc
-				}
-			default:
-				if acc.LastUsedAt.Before(*selected.LastUsedAt) {
-					selected = acc
-				}
-			}
 		}
 	}
 
@@ -3521,6 +3525,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 
 func (s *GatewayService) selectAccountWithMixedSchedulingWithBinding(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, nativePlatform string, bindSticky bool) (*Account, error) {
 	preferOAuth := nativePlatform == PlatformGemini
+	strategy := s.gatewaySchedulingStrategy(ctx)
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
 
 	// require_privacy_set: 获取分组信息
@@ -3624,27 +3629,8 @@ func (s *GatewayService) selectAccountWithMixedSchedulingWithBinding(ctx context
 			if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 				continue
 			}
-			if selected == nil {
+			if shouldPreferAccountByStrategy(acc, selected, preferOAuth, strategy) {
 				selected = acc
-				continue
-			}
-			if acc.Priority < selected.Priority {
-				selected = acc
-			} else if acc.Priority == selected.Priority {
-				switch {
-				case acc.LastUsedAt == nil && selected.LastUsedAt != nil:
-					selected = acc
-				case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
-					// keep selected (never used is preferred)
-				case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-					if preferOAuth && acc.Platform == PlatformGemini && selected.Platform == PlatformGemini && acc.Type != selected.Type && acc.Type == AccountTypeOAuth {
-						selected = acc
-					}
-				default:
-					if acc.LastUsedAt.Before(*selected.LastUsedAt) {
-						selected = acc
-					}
-				}
 			}
 		}
 
@@ -3697,7 +3683,7 @@ func (s *GatewayService) selectAccountWithMixedSchedulingWithBinding(ctx context
 	ctx = s.withWindowCostPrefetch(ctx, accounts)
 	ctx = s.withRPMPrefetch(ctx, accounts)
 
-	// 3. 按优先级+最久未用选择（考虑模型支持和混合调度）
+	// 3. 按优先级+调度策略选择（考虑模型支持和混合调度）
 	// needsUpstreamCheck 仅在主选择循环中使用；粘性会话命中时跳过此检查。
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	var selected *Account
@@ -3742,27 +3728,8 @@ func (s *GatewayService) selectAccountWithMixedSchedulingWithBinding(ctx context
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 			continue
 		}
-		if selected == nil {
+		if shouldPreferAccountByStrategy(acc, selected, preferOAuth, strategy) {
 			selected = acc
-			continue
-		}
-		if acc.Priority < selected.Priority {
-			selected = acc
-		} else if acc.Priority == selected.Priority {
-			switch {
-			case acc.LastUsedAt == nil && selected.LastUsedAt != nil:
-				selected = acc
-			case acc.LastUsedAt != nil && selected.LastUsedAt == nil:
-				// keep selected (never used is preferred)
-			case acc.LastUsedAt == nil && selected.LastUsedAt == nil:
-				if preferOAuth && acc.Platform == PlatformGemini && selected.Platform == PlatformGemini && acc.Type != selected.Type && acc.Type == AccountTypeOAuth {
-					selected = acc
-				}
-			default:
-				if acc.LastUsedAt.Before(*selected.LastUsedAt) {
-					selected = acc
-				}
-			}
 		}
 	}
 

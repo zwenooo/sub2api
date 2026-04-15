@@ -1314,14 +1314,15 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	return account
 }
 
-// selectBestAccount 从候选账号中选择最佳账号（优先级 + LRU）。
+// selectBestAccount 从候选账号中选择最佳账号（优先级 + 调度策略）。
 // 返回 nil 表示无可用账号。
 //
-// selectBestAccount selects the best account from candidates (priority + LRU).
+// selectBestAccount selects the best account from candidates (priority + scheduling strategy).
 // Returns nil if no available account.
 func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}) *Account {
 	var selected *Account
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	strategy := s.gatewaySchedulingStrategy(ctx)
 
 	for i := range accounts {
 		acc := &accounts[i]
@@ -1344,14 +1345,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 
-		// 选择优先级最高且最久未使用的账号
-		// Select highest priority and least recently used
-		if selected == nil {
-			selected = fresh
-			continue
-		}
-
-		if s.isBetterAccount(fresh, selected) {
+		if s.isBetterAccount(fresh, selected, strategy) {
 			selected = fresh
 		}
 	}
@@ -1360,36 +1354,12 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 }
 
 // isBetterAccount 判断 candidate 是否比 current 更优。
-// 规则：优先级更高（数值更小）优先；同优先级时，未使用过的优先，其次是最久未使用的。
+// 规则由当前网关调度策略决定。
 //
 // isBetterAccount checks if candidate is better than current.
-// Rules: higher priority (lower value) wins; same priority: never used > least recently used.
-func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool {
-	// 优先级更高（数值更小）
-	// Higher priority (lower value)
-	if candidate.Priority < current.Priority {
-		return true
-	}
-	if candidate.Priority > current.Priority {
-		return false
-	}
-
-	// 同优先级，比较最后使用时间
-	// Same priority, compare last used time
-	switch {
-	case candidate.LastUsedAt == nil && current.LastUsedAt != nil:
-		// candidate 从未使用，优先
-		return true
-	case candidate.LastUsedAt != nil && current.LastUsedAt == nil:
-		// current 从未使用，保持
-		return false
-	case candidate.LastUsedAt == nil && current.LastUsedAt == nil:
-		// 都未使用，保持
-		return false
-	default:
-		// 都使用过，选择最久未使用的
-		return candidate.LastUsedAt.Before(*current.LastUsedAt)
-	}
+// Rules are determined by the current gateway scheduling strategy.
+func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account, strategy string) bool {
+	return shouldPreferAccountByStrategy(candidate, current, false, strategy)
 }
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
