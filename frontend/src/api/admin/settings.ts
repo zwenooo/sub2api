@@ -11,6 +11,8 @@ export interface DefaultSubscriptionSetting {
   validity_days: number
 }
 
+export type GatewaySchedulingStrategy = 'balanced' | 'single_exhaustion'
+
 /**
  * System settings interface
  */
@@ -109,7 +111,7 @@ export interface SystemSettings {
 
   // 分组隔离
   allow_ungrouped_key_scheduling: boolean
-  gateway_scheduling_strategy: 'balanced' | 'single_exhaustion' | string
+  gateway_scheduling_strategy: GatewaySchedulingStrategy
 
   // Gateway forwarding behavior
   enable_fingerprint_unification: boolean
@@ -222,7 +224,7 @@ export interface UpdateSettingsRequest {
   min_claude_code_version?: string
   max_claude_code_version?: string
   allow_ungrouped_key_scheduling?: boolean
-  gateway_scheduling_strategy?: 'balanced' | 'single_exhaustion' | string
+  gateway_scheduling_strategy?: GatewaySchedulingStrategy
   enable_fingerprint_unification?: boolean
   enable_metadata_passthrough?: boolean
   enable_cch_signing?: boolean
