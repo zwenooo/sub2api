@@ -441,6 +441,19 @@ func filterOpenAICandidatesByMinPriority(candidates []openAIAccountCandidateScor
 	return filtered
 }
 
+func filterOpenAICandidatesByAvailableLoad(candidates []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return nil
+	}
+	filtered := make([]openAIAccountCandidateScore, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.loadInfo == nil || candidate.loadInfo.LoadRate < 100 {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
 func selectOpenAISingleExhaustionCandidate(candidates []openAIAccountCandidateScore) *openAIAccountCandidateScore {
 	if len(candidates) == 0 {
 		return nil
@@ -767,7 +780,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	cfg := s.service.schedulingConfig()
 
 	if strategy == GatewaySchedulingStrategySingleExhaustion {
-		remaining := append([]openAIAccountCandidateScore(nil), candidates...)
+		remaining := append([]openAIAccountCandidateScore(nil), filterOpenAICandidatesByAvailableLoad(candidates)...)
 		for len(remaining) > 0 {
 			priorityBatch := filterOpenAICandidatesByMinPriority(remaining)
 			selected := selectOpenAISingleExhaustionCandidate(priorityBatch)
@@ -863,7 +876,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			loadInfo: candidate.loadInfo,
 		})
 	}
-	waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, waitInputs, s.service.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode, strategy)
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.service.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode)
 	for _, item := range waitCandidates {
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, item.account, req.RequestedModel)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
