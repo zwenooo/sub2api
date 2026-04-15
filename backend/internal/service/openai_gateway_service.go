@@ -1233,8 +1233,8 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 		return nil, fmt.Errorf("query accounts failed: %w", err)
 	}
 
-	// 3. 按优先级 + LRU 选择最佳账号
-	// Select by priority + LRU
+	// 3. 按优先级 + 调度策略选择最佳账号
+	// Select by priority + scheduling strategy
 	selected := s.selectBestAccount(ctx, groupID, accounts, requestedModel, excludedIDs)
 
 	if selected == nil {
