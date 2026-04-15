@@ -1036,6 +1036,7 @@ const loadUsage = async (source?: 'passive' | 'active', bypassCache: boolean = f
     const cached = _usageCache.get(props.account.id)
     if (cached && Date.now() - cached.ts < USAGE_CACHE_TTL) {
       usageInfo.value = cached.data
+      error.value = null
       loading.value = false
       return
     }
@@ -1095,6 +1096,7 @@ const loadActiveUsage = async () => {
   activeQueryLoading.value = true
   try {
     usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, 'active')
+    error.value = null
     if (usageInfo.value) {
       _usageCache.set(props.account.id, { data: usageInfo.value, ts: Date.now() })
     }
