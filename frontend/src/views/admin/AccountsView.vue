@@ -1555,7 +1555,7 @@ const accountMatchesGroupFilter = (account: Account) => {
           .map((group) => group?.id)
           .filter((groupID): groupID is number => Number.isFinite(groupID))
       : []
-  if (groupFilter === 'ungrouped') {
+  if (groupFilter === ACCOUNT_UNGROUPED_GROUP_QUERY_VALUE) {
     return groupIDs.length === 0
   }
   const parsedGroupID = Number.parseInt(groupFilter, 10)
