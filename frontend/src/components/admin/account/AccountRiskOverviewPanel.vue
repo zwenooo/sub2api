@@ -256,15 +256,38 @@ const formatNumber = (value: number) => value.toLocaleString()
   <section
     class="overflow-hidden rounded-[28px] border border-slate-200/80 bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.14),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(59,130,246,0.10),_transparent_28%),linear-gradient(135deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] p-5 shadow-sm dark:border-dark-700 dark:bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.16),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(37,99,235,0.12),_transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.98),rgba(17,24,39,0.96))]"
   >
-    <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+    <div class="space-y-2.5">
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div class="max-w-xl">
+          <p class="text-[11px] font-semibold uppercase tracking-[0.26em] text-amber-600 dark:text-amber-300">
+            {{ t('admin.accounts.riskOverview.eyebrow') }}
+          </p>
+          <h3 class="mt-1.5 text-lg font-semibold text-slate-900 dark:text-white">
+            {{ t('admin.accounts.riskOverview.title') }}
+          </h3>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[440px]">
+          <div
+            v-for="card in statCards"
+            :key="card.label"
+            :class="[
+              'flex min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/60 bg-gradient-to-br px-3 py-2 shadow-sm ring-1 ring-black/5 dark:border-white/5 dark:ring-white/5',
+              card.accent
+            ]"
+          >
+            <p class="truncate text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
+              {{ card.label }}
+            </p>
+            <p :class="['shrink-0 text-base font-semibold', card.tone]">
+              {{ formatNumber(card.value) }}
+            </p>
+          </div>
+        </div>
+      </div>
+
       <div class="max-w-2xl">
-        <p class="text-[11px] font-semibold uppercase tracking-[0.26em] text-amber-600 dark:text-amber-300">
-          {{ t('admin.accounts.riskOverview.eyebrow') }}
-        </p>
-        <h3 class="mt-1.5 text-lg font-semibold text-slate-900 dark:text-white">
-          {{ t('admin.accounts.riskOverview.title') }}
-        </h3>
-        <p class="mt-1 text-sm leading-5 text-slate-600 dark:text-slate-300">
+        <p class="text-sm leading-5 text-slate-600 dark:text-slate-300">
           {{ t('admin.accounts.riskOverview.description') }}
         </p>
         <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
@@ -277,24 +300,6 @@ const formatNumber = (value: number) => value.toLocaleString()
           <span class="rounded-full bg-white/80 px-3 py-1 ring-1 ring-slate-200/80 dark:bg-dark-800/80 dark:ring-dark-600">
             {{ t('admin.accounts.riskOverview.unknown', { count: formatNumber(summary.unknown_accounts) }) }}
           </span>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[440px]">
-        <div
-          v-for="card in statCards"
-          :key="card.label"
-          :class="[
-            'flex min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/60 bg-gradient-to-br px-3 py-2 shadow-sm ring-1 ring-black/5 dark:border-white/5 dark:ring-white/5',
-            card.accent
-          ]"
-        >
-          <p class="truncate text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
-            {{ card.label }}
-          </p>
-          <p :class="['shrink-0 text-base font-semibold', card.tone]">
-            {{ formatNumber(card.value) }}
-          </p>
         </div>
       </div>
     </div>
