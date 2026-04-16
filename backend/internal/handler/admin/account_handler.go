@@ -467,6 +467,8 @@ func (h *AccountHandler) GetStatusSummary(c *gin.Context) {
 				filter.Search,
 				filter.GroupID,
 				filter.PrivacyMode,
+				"",
+				"",
 			)
 			if err != nil {
 				return err
@@ -1330,7 +1332,7 @@ func (h *AccountHandler) UpdateOpenAIAutoDisableRules(c *gin.Context) {
 func (h *AccountHandler) BatchRefreshPendingOpenAI(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0, "")
+	allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0, "", "", "")
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
