@@ -256,7 +256,7 @@ const formatNumber = (value: number) => value.toLocaleString()
   <section
     class="overflow-hidden rounded-[28px] border border-slate-200/80 bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.14),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(59,130,246,0.10),_transparent_28%),linear-gradient(135deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] p-5 shadow-sm dark:border-dark-700 dark:bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.16),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(37,99,235,0.12),_transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.98),rgba(17,24,39,0.96))]"
   >
-    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+    <div class="flex flex-col gap-4">
       <div class="max-w-2xl">
         <p class="text-[11px] font-semibold uppercase tracking-[0.26em] text-amber-600 dark:text-amber-300">
           {{ t('admin.accounts.riskOverview.eyebrow') }}
@@ -269,19 +269,19 @@ const formatNumber = (value: number) => value.toLocaleString()
         </p>
       </div>
 
-      <div class="grid grid-cols-2 gap-2 lg:min-w-[360px]">
+      <div class="grid grid-cols-2 gap-2 md:grid-cols-4">
         <div
           v-for="card in statCards"
           :key="card.label"
           :class="[
-            'rounded-2xl border border-white/60 bg-gradient-to-br px-4 py-3 shadow-sm ring-1 ring-black/5 dark:border-white/5 dark:ring-white/5',
+            'flex min-w-0 items-center justify-between gap-3 rounded-2xl border border-white/60 bg-gradient-to-br px-4 py-2.5 shadow-sm ring-1 ring-black/5 dark:border-white/5 dark:ring-white/5',
             card.accent
           ]"
         >
-          <p class="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+          <p class="truncate text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
             {{ card.label }}
           </p>
-          <p :class="['mt-2 text-2xl font-semibold', card.tone]">
+          <p :class="['shrink-0 text-lg font-semibold', card.tone]">
             {{ formatNumber(card.value) }}
           </p>
         </div>
