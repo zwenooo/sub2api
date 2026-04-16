@@ -256,97 +256,96 @@ const formatNumber = (value: number) => value.toLocaleString()
   <section
     class="overflow-hidden rounded-[28px] border border-slate-200/80 bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.14),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(59,130,246,0.10),_transparent_28%),linear-gradient(135deg,rgba(255,255,255,0.98),rgba(248,250,252,0.96))] p-5 shadow-sm dark:border-dark-700 dark:bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.16),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(37,99,235,0.12),_transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.98),rgba(17,24,39,0.96))]"
   >
-    <div class="flex flex-col gap-4">
+    <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
       <div class="max-w-2xl">
         <p class="text-[11px] font-semibold uppercase tracking-[0.26em] text-amber-600 dark:text-amber-300">
           {{ t('admin.accounts.riskOverview.eyebrow') }}
         </p>
-        <h3 class="mt-2 text-lg font-semibold text-slate-900 dark:text-white">
+        <h3 class="mt-1.5 text-lg font-semibold text-slate-900 dark:text-white">
           {{ t('admin.accounts.riskOverview.title') }}
         </h3>
-        <p class="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+        <p class="mt-1 text-sm leading-5 text-slate-600 dark:text-slate-300">
           {{ t('admin.accounts.riskOverview.description') }}
         </p>
+        <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+          <span class="rounded-full bg-white/80 px-3 py-1 ring-1 ring-slate-200/80 dark:bg-dark-800/80 dark:ring-dark-600">
+            {{ t('admin.accounts.riskOverview.coverage', { charted: formatNumber(summary.charted_accounts), supported: formatNumber(summary.supported_accounts) }) }}
+          </span>
+          <span class="rounded-full bg-white/80 px-3 py-1 ring-1 ring-slate-200/80 dark:bg-dark-800/80 dark:ring-dark-600">
+            {{ t('admin.accounts.riskOverview.excluded', { count: formatNumber(summary.excluded_accounts) }) }}
+          </span>
+          <span class="rounded-full bg-white/80 px-3 py-1 ring-1 ring-slate-200/80 dark:bg-dark-800/80 dark:ring-dark-600">
+            {{ t('admin.accounts.riskOverview.unknown', { count: formatNumber(summary.unknown_accounts) }) }}
+          </span>
+        </div>
       </div>
 
-      <div class="grid grid-cols-2 gap-2 md:grid-cols-4">
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[440px]">
         <div
           v-for="card in statCards"
           :key="card.label"
           :class="[
-            'flex min-w-0 items-center justify-between gap-3 rounded-2xl border border-white/60 bg-gradient-to-br px-4 py-2.5 shadow-sm ring-1 ring-black/5 dark:border-white/5 dark:ring-white/5',
+            'flex min-w-0 items-center justify-between gap-2 rounded-2xl border border-white/60 bg-gradient-to-br px-3 py-2 shadow-sm ring-1 ring-black/5 dark:border-white/5 dark:ring-white/5',
             card.accent
           ]"
         >
-          <p class="truncate text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+          <p class="truncate text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
             {{ card.label }}
           </p>
-          <p :class="['shrink-0 text-lg font-semibold', card.tone]">
+          <p :class="['shrink-0 text-base font-semibold', card.tone]">
             {{ formatNumber(card.value) }}
           </p>
         </div>
       </div>
     </div>
 
-    <div class="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-      <span class="rounded-full bg-white/80 px-3 py-1 ring-1 ring-slate-200/80 dark:bg-dark-800/80 dark:ring-dark-600">
-        {{ t('admin.accounts.riskOverview.coverage', { charted: formatNumber(summary.charted_accounts), supported: formatNumber(summary.supported_accounts) }) }}
-      </span>
-      <span class="rounded-full bg-white/80 px-3 py-1 ring-1 ring-slate-200/80 dark:bg-dark-800/80 dark:ring-dark-600">
-        {{ t('admin.accounts.riskOverview.excluded', { count: formatNumber(summary.excluded_accounts) }) }}
-      </span>
-      <span class="rounded-full bg-white/80 px-3 py-1 ring-1 ring-slate-200/80 dark:bg-dark-800/80 dark:ring-dark-600">
-        {{ t('admin.accounts.riskOverview.unknown', { count: formatNumber(summary.unknown_accounts) }) }}
-      </span>
+    <div v-if="loading" class="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <div class="h-[228px] animate-pulse rounded-3xl bg-slate-100/90 dark:bg-dark-700/60"></div>
+      <div class="h-[228px] animate-pulse rounded-3xl bg-slate-100/90 dark:bg-dark-700/60"></div>
     </div>
 
-    <div v-if="loading" class="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-2">
-      <div class="h-[260px] animate-pulse rounded-3xl bg-slate-100/90 dark:bg-dark-700/60"></div>
-      <div class="h-[260px] animate-pulse rounded-3xl bg-slate-100/90 dark:bg-dark-700/60"></div>
-    </div>
-
-    <div v-else-if="!hasSupportedAccounts" class="mt-5 rounded-3xl border border-dashed border-slate-300/80 bg-white/70 p-8 dark:border-dark-600 dark:bg-dark-800/70">
+    <div v-else-if="!hasSupportedAccounts" class="mt-4 rounded-3xl border border-dashed border-slate-300/80 bg-white/70 p-6 dark:border-dark-600 dark:bg-dark-800/70">
       <EmptyState
         :title="t('admin.accounts.riskOverview.noSupportedTitle')"
         :description="t('admin.accounts.riskOverview.noSupportedDescription')"
       />
     </div>
 
-    <div v-else-if="!hasChartedAccounts" class="mt-5 rounded-3xl border border-dashed border-slate-300/80 bg-white/70 p-8 dark:border-dark-600 dark:bg-dark-800/70">
+    <div v-else-if="!hasChartedAccounts" class="mt-4 rounded-3xl border border-dashed border-slate-300/80 bg-white/70 p-6 dark:border-dark-600 dark:bg-dark-800/70">
       <EmptyState
         :title="t('admin.accounts.riskOverview.noChartedTitle')"
         :description="t('admin.accounts.riskOverview.noChartedDescription')"
       />
     </div>
 
-    <div v-else class="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-2">
-      <div class="rounded-3xl border border-slate-200/80 bg-white/85 p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800/80">
-        <div class="mb-3">
+    <div v-else class="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <div class="rounded-3xl border border-slate-200/80 bg-white/85 p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800/80">
+        <div class="mb-2">
           <h4 class="text-sm font-semibold text-slate-900 dark:text-white">
             {{ t('admin.accounts.riskOverview.riskChartTitle') }}
           </h4>
-          <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+          <p class="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
             {{ t('admin.accounts.riskOverview.riskChartDescription') }}
           </p>
         </div>
-        <div class="h-[220px]">
+        <div class="h-[192px] lg:h-[200px]">
           <Bar v-if="riskChartData" :data="riskChartData" :options="riskChartOptions" />
         </div>
       </div>
 
-      <div class="rounded-3xl border border-slate-200/80 bg-white/85 p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800/80">
-        <div class="mb-3">
+      <div class="rounded-3xl border border-slate-200/80 bg-white/85 p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800/80">
+        <div class="mb-2">
           <h4 class="text-sm font-semibold text-slate-900 dark:text-white">
             {{ t('admin.accounts.riskOverview.recoveryChartTitle') }}
           </h4>
-          <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+          <p class="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
             {{ t('admin.accounts.riskOverview.recoveryChartDescription') }}
           </p>
         </div>
-        <div v-if="recoveryChartData" class="h-[220px]">
+        <div v-if="recoveryChartData" class="h-[192px] lg:h-[200px]">
           <Bar :data="recoveryChartData" :options="recoveryChartOptions" />
         </div>
-        <div v-else class="flex h-[220px] items-center justify-center">
+        <div v-else class="flex h-[192px] lg:h-[200px] items-center justify-center">
           <EmptyState
             :title="t('admin.accounts.riskOverview.noRecoveryTitle')"
             :description="t('admin.accounts.riskOverview.noRecoveryDescription')"
@@ -355,7 +354,7 @@ const formatNumber = (value: number) => value.toLocaleString()
       </div>
     </div>
 
-    <p class="mt-4 text-xs leading-5 text-slate-500 dark:text-slate-400">
+    <p class="mt-3 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
       {{ t('admin.accounts.riskOverview.footnote') }}
     </p>
   </section>
