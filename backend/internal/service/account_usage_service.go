@@ -671,7 +671,7 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	// Extract snapshot from response headers (does not read body)
 	updates, resetAt, err := extractOpenAICodexProbeSnapshot(resp)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Extract token usage from SSE response body (body still open at this point)
@@ -697,9 +697,9 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 
 	if len(updates) > 0 || resetAt != nil {
 		s.persistOpenAICodexProbeSnapshot(account.ID, updates, resetAt)
-		return updates, resetAt, nil
+		return updates, nil
 	}
-	return nil, nil, nil
+	return nil, nil
 }
 
 func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any, resetAt *time.Time) {
