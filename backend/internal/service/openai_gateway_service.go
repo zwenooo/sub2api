@@ -1441,14 +1441,13 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			waitInputs = append(waitInputs, accountWithLoad{account: account})
 		}
 
-		waitCandidates := rankWaitPlanCandidatesByStrategy(
+		waitCandidates := rankWaitPlanCandidates(
 			ctx,
 			waitInputs,
 			s.concurrencyService,
 			cfg.FallbackMaxWaiting,
 			false,
 			cfg.FallbackSelectionMode,
-			strategy,
 		)
 		for _, item := range waitCandidates {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
@@ -1518,14 +1517,13 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			waitInputs = append(waitInputs, accountWithLoad{account: account})
 		}
 
-		waitCandidates := rankWaitPlanCandidatesByStrategy(
+		waitCandidates := rankWaitPlanCandidates(
 			ctx,
 			waitInputs,
 			s.concurrencyService,
 			cfg.FallbackMaxWaiting,
 			false,
 			cfg.FallbackSelectionMode,
-			strategy,
 		)
 		for _, item := range waitCandidates {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
@@ -1705,23 +1703,6 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 						return s.newSelectionResult(ctx, fresh, true, result.ReleaseFunc, nil)
 					}
 
-					waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, []accountWithLoad{{account: fresh, loadInfo: item.loadInfo}}, s.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode, strategy)
-					for _, waitItem := range waitCandidates {
-						waitFresh := s.resolveFreshSchedulableOpenAIAccount(ctx, waitItem.account, requestedModel)
-						if waitFresh == nil {
-							continue
-						}
-						if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, waitFresh, requestedModel) {
-							continue
-						}
-						return s.newSelectionResult(ctx, waitFresh, false, nil, &AccountWaitPlan{
-							AccountID:      waitFresh.ID,
-							MaxConcurrency: waitFresh.Concurrency,
-							Timeout:        cfg.FallbackWaitTimeout,
-							MaxWaiting:     cfg.FallbackMaxWaiting,
-						})
-					}
-
 					remaining = removeAccountWithLoadByID(remaining, item.account.ID)
 				}
 			} else {
@@ -1774,7 +1755,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			loadInfo: loadMap[acc.ID],
 		})
 	}
-	waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode, strategy)
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, false, cfg.FallbackSelectionMode)
 	for _, item := range waitCandidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel)
 		if fresh == nil {

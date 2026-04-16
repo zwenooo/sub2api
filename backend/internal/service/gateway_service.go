@@ -1363,14 +1363,13 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			waitInputs = append(waitInputs, accountWithLoad{account: account})
 		}
 
-		waitCandidates := rankWaitPlanCandidatesByStrategy(
+		waitCandidates := rankWaitPlanCandidates(
 			ctx,
 			waitInputs,
 			s.concurrencyService,
 			cfg.FallbackMaxWaiting,
 			preferOAuth,
 			cfg.FallbackSelectionMode,
-			strategy,
 		)
 		for _, item := range waitCandidates {
 			if item.account == nil {
@@ -1682,7 +1681,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					}
 
 					// 5. 所有路由账号槽位满，优先把请求排到等待队列更短的账号。
-					waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, routingAvailable, s.concurrencyService, cfg.StickySessionMaxWaiting, preferOAuth, cfg.FallbackSelectionMode, strategy)
+					waitCandidates := rankWaitPlanCandidates(ctx, routingAvailable, s.concurrencyService, cfg.StickySessionMaxWaiting, preferOAuth, cfg.FallbackSelectionMode)
 					for _, item := range waitCandidates {
 						if !item.waitQueueOverflow && !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
 							continue // 会话限制已满，尝试下一个
@@ -1857,21 +1856,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				}
 			}
 
-			if strategy == GatewaySchedulingStrategySingleExhaustion {
-				waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, []accountWithLoad{*selected}, s.concurrencyService, cfg.FallbackMaxWaiting, preferOAuth, cfg.FallbackSelectionMode, strategy)
-				for _, item := range waitCandidates {
-					if !item.waitQueueOverflow && !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
-						continue
-					}
-					return s.newSelectionResult(ctx, item.account, false, nil, &AccountWaitPlan{
-						AccountID:      item.account.ID,
-						MaxConcurrency: item.account.Concurrency,
-						Timeout:        cfg.FallbackWaitTimeout,
-						MaxWaiting:     cfg.FallbackMaxWaiting,
-					})
-				}
-			}
-
 			// 移除已尝试的账号，重新进行下一轮选择
 			selectedID := selected.account.ID
 			newAvailable := make([]accountWithLoad, 0, len(available)-1)
@@ -1892,7 +1876,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			loadInfo: loadMap[acc.ID],
 		})
 	}
-	waitCandidates := rankWaitPlanCandidatesByStrategy(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, preferOAuth, cfg.FallbackSelectionMode, strategy)
+	waitCandidates := rankWaitPlanCandidates(ctx, waitInputs, s.concurrencyService, cfg.FallbackMaxWaiting, preferOAuth, cfg.FallbackSelectionMode)
 	for _, item := range waitCandidates {
 		acc := item.account
 		// 会话数量限制检查（等待计划也需要占用会话配额）
@@ -2916,98 +2900,6 @@ func rankWaitPlanCandidates(
 	}
 	sortAccountsByWaitPressure(overflow, preferOAuth, mode)
 	return overflow
-}
-
-func rankWaitPlanCandidatesByStrategy(
-	ctx context.Context,
-	accounts []accountWithLoad,
-	concurrencyService *ConcurrencyService,
-	maxWaiting int,
-	preferOAuth bool,
-	mode string,
-	strategy string,
-) []accountWithLoad {
-	if NormalizeGatewaySchedulingStrategy(strategy) == GatewaySchedulingStrategySingleExhaustion {
-		return rankSingleExhaustionWaitPlanCandidates(ctx, accounts, concurrencyService, maxWaiting, preferOAuth)
-	}
-	return rankWaitPlanCandidates(ctx, accounts, concurrencyService, maxWaiting, preferOAuth, mode)
-}
-
-func rankSingleExhaustionWaitPlanCandidates(
-	ctx context.Context,
-	accounts []accountWithLoad,
-	concurrencyService *ConcurrencyService,
-	maxWaiting int,
-	preferOAuth bool,
-) []accountWithLoad {
-	if len(accounts) == 0 {
-		return nil
-	}
-
-	underLimit := make([]accountWithLoad, 0, len(accounts))
-	overflow := make([]accountWithLoad, 0, len(accounts))
-	for _, item := range accounts {
-		if item.account == nil {
-			continue
-		}
-		loadInfo := cloneAccountLoadInfo(item.account.ID, item.loadInfo)
-		queueOverflow := false
-		if item.loadInfo == nil && concurrencyService != nil {
-			if waitingCount, err := concurrencyService.GetAccountWaitingCount(ctx, item.account.ID); err == nil {
-				loadInfo.WaitingCount = waitingCount
-			} else {
-				loadInfo.WaitingCount = overflowWaitingCount(maxWaiting)
-				queueOverflow = true
-			}
-		}
-		if maxWaiting > 0 && loadInfo.WaitingCount >= maxWaiting {
-			queueOverflow = true
-		}
-		rankedItem := accountWithLoad{
-			account:           item.account,
-			loadInfo:          loadInfo,
-			waitQueueOverflow: queueOverflow,
-		}
-		if queueOverflow {
-			overflow = append(overflow, rankedItem)
-			continue
-		}
-		underLimit = append(underLimit, rankedItem)
-	}
-
-	sortSingleExhaustionWaitCandidates(underLimit, preferOAuth)
-	if len(underLimit) > 0 {
-		return underLimit
-	}
-	sortSingleExhaustionWaitCandidates(overflow, preferOAuth)
-	return overflow
-}
-
-func sortSingleExhaustionWaitCandidates(accounts []accountWithLoad, preferOAuth bool) {
-	sort.SliceStable(accounts, func(i, j int) bool {
-		a, b := accounts[i], accounts[j]
-		if a.account.Priority != b.account.Priority {
-			return a.account.Priority < b.account.Priority
-		}
-		switch {
-		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-			return false
-		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-			return true
-		case a.account.LastUsedAt != nil && b.account.LastUsedAt != nil && !a.account.LastUsedAt.Equal(*b.account.LastUsedAt):
-			return a.account.LastUsedAt.After(*b.account.LastUsedAt)
-		}
-		if preferOAuth && a.account.Type != b.account.Type {
-			return a.account.Type == AccountTypeOAuth
-		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
-		}
-		return a.account.ID < b.account.ID
-	})
 }
 
 func sortAccountsByWaitPressure(accounts []accountWithLoad, preferOAuth bool, mode string) {
