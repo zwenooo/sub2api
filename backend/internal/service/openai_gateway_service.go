@@ -2747,6 +2747,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if account.Type == AccountTypeOAuth {
 			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+				s.proactiveRateLimitOnCodexExhausted(ctx, account, snapshot)
 			}
 		}
 
@@ -2968,6 +2969,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 		s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+		s.proactiveRateLimitOnCodexExhausted(ctx, account, snapshot)
 	}
 
 	if usage == nil {
@@ -5295,6 +5297,26 @@ func codexRateLimitResetAtFromExtra(extra map[string]any, now time.Time) *time.T
 	return nil
 }
 
+// proactiveRateLimitOnCodexExhausted checks if codex usage headers indicate >= 100%
+// and proactively rate-limits the account to prevent further 429 storms.
+func (s *OpenAIGatewayService) proactiveRateLimitOnCodexExhausted(ctx context.Context, account *Account, snapshot *OpenAICodexUsageSnapshot) {
+	if s == nil || s.rateLimitService == nil || s.accountRepo == nil || account == nil || snapshot == nil {
+		return
+	}
+	if account.IsRateLimited() {
+		return
+	}
+	resetAt := codexRateLimitResetAtFromSnapshot(snapshot, time.Now())
+	if resetAt == nil {
+		return
+	}
+	if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
+		slog.Warn("proactive_codex_rate_limit_set_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	slog.Info("proactive_codex_rate_limit_on_full_utilization", "account_id", account.ID, "reset_at", *resetAt)
+}
+
 // updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
 func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot) {
 	if snapshot == nil {
@@ -5327,7 +5349,23 @@ func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.C
 	}
 	if snapshot := ParseCodexRateLimitHeaders(headers); snapshot != nil {
 		s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
+		s.proactiveRateLimitOnCodexExhaustedByID(ctx, accountID, snapshot)
 	}
+}
+
+func (s *OpenAIGatewayService) proactiveRateLimitOnCodexExhaustedByID(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot) {
+	if s == nil || s.accountRepo == nil || accountID <= 0 || snapshot == nil {
+		return
+	}
+	resetAt := codexRateLimitResetAtFromSnapshot(snapshot, time.Now())
+	if resetAt == nil {
+		return
+	}
+	if err := s.accountRepo.SetRateLimited(ctx, accountID, *resetAt); err != nil {
+		slog.Warn("proactive_codex_rate_limit_set_failed", "account_id", accountID, "error", err)
+		return
+	}
+	slog.Info("proactive_codex_rate_limit_on_full_utilization", "account_id", accountID, "reset_at", *resetAt)
 }
 
 func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any) (value string, present bool) {

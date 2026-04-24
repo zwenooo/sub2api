@@ -1059,6 +1059,42 @@ func pickSooner(a, b *time.Time) *time.Time {
 	}
 }
 
+// resolveAnthropicProactiveResetTime 从非 429 响应头中解析限流重置时间。
+// 仅在 utilization 已达 100% 时调用，根据触发的窗口选择正确的 reset 时间。
+func (s *RateLimitService) resolveAnthropicProactiveResetTime(headers http.Header, is5hExceeded, is7dExceeded bool) *time.Time {
+	var reset5h, reset7d *time.Time
+	if str := headers.Get("anthropic-ratelimit-unified-5h-reset"); str != "" {
+		if ts, err := strconv.ParseInt(str, 10, 64); err == nil {
+			if ts > 1e11 {
+				ts = ts / 1000
+			}
+			t := time.Unix(ts, 0)
+			reset5h = &t
+		}
+	}
+	if str := headers.Get("anthropic-ratelimit-unified-7d-reset"); str != "" {
+		if ts, err := strconv.ParseInt(str, 10, 64); err == nil {
+			if ts > 1e11 {
+				ts = ts / 1000
+			}
+			t := time.Unix(ts, 0)
+			reset7d = &t
+		}
+	}
+
+	switch {
+	case is5hExceeded && is7dExceeded:
+		if reset7d != nil {
+			return reset7d
+		}
+		return reset5h
+	case is7dExceeded:
+		return reset7d
+	default:
+		return reset5h
+	}
+}
+
 func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, account *Account, headers http.Header) {
 	if s == nil || s.accountRepo == nil || account == nil || headers == nil {
 		return
@@ -1259,6 +1295,29 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 		extraUpdates["passive_usage_sampled_at"] = time.Now().UTC().Format(time.RFC3339)
 		if err := s.accountRepo.UpdateExtra(ctx, account.ID, extraUpdates); err != nil {
 			slog.Warn("passive_usage_update_failed", "account_id", account.ID, "error", err)
+		}
+	}
+
+	// 当 5h 或 7d utilization 达到 100% 时，主动将账号标记为限流，
+	// 不再等待实际 429 响应，避免高并发场景下持续报错
+	if !account.IsRateLimited() {
+		is5hExceeded := isAnthropicWindowExceeded(headers, "5h")
+		is7dExceeded := isAnthropicWindowExceeded(headers, "7d")
+		if is5hExceeded || is7dExceeded {
+			resetAt := s.resolveAnthropicProactiveResetTime(headers, is5hExceeded, is7dExceeded)
+			if resetAt != nil {
+				if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
+					slog.Warn("proactive_rate_limit_set_failed", "account_id", account.ID, "error", err)
+				} else {
+					slog.Info("proactive_rate_limit_on_full_utilization",
+						"account_id", account.ID,
+						"reset_at", *resetAt,
+						"5h_exceeded", is5hExceeded,
+						"7d_exceeded", is7dExceeded,
+					)
+				}
+				return
+			}
 		}
 	}
 
