@@ -1724,5 +1724,16 @@ export interface UpdateScheduledTestPlanRequest {
   auto_recover?: boolean
 }
 
+// OpenAI Compact types
+export type OpenAICompactMode = 'auto' | 'force_on' | 'force_off'
+
+export interface OpenAICompactState {
+  openai_compact_mode?: OpenAICompactMode
+  openai_compact_supported?: boolean
+  openai_compact_checked_at?: string
+  openai_compact_last_status?: number
+  openai_compact_last_error?: string
+}
+
 // Payment types
 export type { SubscriptionPlan, PaymentOrder, CheckoutInfoResponse } from './payment'

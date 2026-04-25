@@ -2507,6 +2507,22 @@ export default {
         codexCLIOnlyDesc:
           'Only applies to OpenAI OAuth. When enabled, only Codex official client families are allowed; when disabled, the gateway bypasses this restriction and keeps existing behavior.',
         modelRestrictionDisabledByPassthrough: 'Automatic passthrough is enabled: model whitelist/mapping will not take effect.',
+        compactMode: 'Compact mode',
+        compactModeDesc:
+          'Controls how this account participates in /responses/compact routing. Auto follows probe results, Force On always allows, Force Off always excludes.',
+        compactModeAuto: 'Auto',
+        compactModeForceOn: 'Force On',
+        compactModeForceOff: 'Force Off',
+        compactModelMapping: 'Compact-only model mapping',
+        compactModelMappingDesc:
+          'Only applies to /responses/compact. Use this when the upstream compact endpoint requires a special compact model.',
+        compactSupported: 'Compact supported',
+        compactUnsupported: 'Compact unsupported',
+        compactUnknown: 'Compact unknown',
+        compactLastChecked: 'Last compact probe',
+        testMode: 'Test mode',
+        testModeDefault: 'Default request',
+        testModeCompact: 'Compact probe',
       },
       anthropic: {
         apiKeyPassthrough: 'Auto passthrough (auth only)',

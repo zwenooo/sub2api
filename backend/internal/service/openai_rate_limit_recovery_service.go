@@ -264,6 +264,13 @@ func (s *OpenAIRateLimitRecoveryService) runRecoveryCheck(parent context.Context
 		return true, false
 	}
 
+	// 探针成功但 7d 限额仍超标时不恢复，避免 5h 恢复后误解除限流
+	freshAccount, reloadErr := s.accountRepo.GetByID(ctx, account.ID)
+	if reloadErr == nil && freshAccount != nil && accountHasStored7dUtilizationExceeded(freshAccount) {
+		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] account=%d probe succeeded but 7d utilization still exceeded, skipping recovery", account.ID)
+		return true, false
+	}
+
 	recovery, err := s.rateLimitSvc.RecoverAccountAfterSuccessfulTest(ctx, account.ID)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_rate_limit_recovery", "[OpenAIRateLimitRecovery] account=%d clear state failed: %v", account.ID, err)
@@ -323,6 +330,52 @@ func accountHasActiveRuntimeRateLimit(account *Account, now time.Time) bool {
 		return true
 	}
 	return account.HasAnyActiveModelRateLimitAt(now)
+}
+
+// accountHasStored7dUtilizationExceeded 检查账号 extras 中存储的 7d utilization
+// 是否仍 >= 100%，且对应的 7d reset 时间尚未到达。
+func accountHasStored7dUtilizationExceeded(account *Account) bool {
+	if account == nil || len(account.Extra) == 0 {
+		return false
+	}
+	raw, ok := account.Extra["passive_usage_7d_utilization"]
+	if !ok || raw == nil {
+		return false
+	}
+	var util float64
+	switch v := raw.(type) {
+	case float64:
+		util = v
+	case int64:
+		util = float64(v)
+	case int:
+		util = float64(v)
+	default:
+		return false
+	}
+	if util < 1.0-1e-9 {
+		return false
+	}
+	// 7d utilization >= 100%，再检查 reset 时间是否仍在未来
+	rawReset, ok := account.Extra["passive_usage_7d_reset"]
+	if !ok || rawReset == nil {
+		return true
+	}
+	var resetTs int64
+	switch v := rawReset.(type) {
+	case float64:
+		resetTs = int64(v)
+	case int64:
+		resetTs = v
+	case int:
+		resetTs = int64(v)
+	default:
+		return true
+	}
+	if resetTs > 1e11 {
+		resetTs = resetTs / 1000
+	}
+	return time.Now().Before(time.Unix(resetTs, 0))
 }
 
 func safeScheduledTestStatus(result *ScheduledTestResult) string {

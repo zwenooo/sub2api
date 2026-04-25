@@ -1300,10 +1300,10 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 
 	// 当 5h 或 7d utilization 达到 100% 时，主动将账号标记为限流，
 	// 不再等待实际 429 响应，避免高并发场景下持续报错
-	if !account.IsRateLimited() {
-		is5hExceeded := isAnthropicWindowExceeded(headers, "5h")
-		is7dExceeded := isAnthropicWindowExceeded(headers, "7d")
-		if is5hExceeded || is7dExceeded {
+	is5hExceeded := isAnthropicWindowExceeded(headers, "5h")
+	is7dExceeded := isAnthropicWindowExceeded(headers, "7d")
+	if is5hExceeded || is7dExceeded {
+		if !account.IsRateLimited() {
 			resetAt := s.resolveAnthropicProactiveResetTime(headers, is5hExceeded, is7dExceeded)
 			if resetAt != nil {
 				if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
@@ -1318,13 +1318,42 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 				}
 				return
 			}
+		} else if is7dExceeded {
+			// 已限流但 7d 新超标：将 reset 延长到 7d，避免 5h 恢复后误解除
+			resetAt := s.resolveAnthropicProactiveResetTime(headers, false, true)
+			if resetAt != nil && account.RateLimitResetAt != nil && resetAt.After(*account.RateLimitResetAt) {
+				if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
+					slog.Warn("proactive_rate_limit_extend_7d_failed", "account_id", account.ID, "error", err)
+				} else {
+					slog.Info("proactive_rate_limit_extended_to_7d",
+						"account_id", account.ID,
+						"old_reset", *account.RateLimitResetAt,
+						"new_reset", *resetAt,
+					)
+				}
+			}
+			return
 		}
 	}
 
-	// 如果状态为allowed且之前有限流，说明窗口已重置，清除限流状态
+	// 5h 状态为 allowed 且之前有限流：仅在 7d 也未超标时才解除
 	if status == "allowed" && account.IsRateLimited() {
-		if err := s.ClearRateLimit(ctx, account.ID); err != nil {
-			slog.Warn("rate_limit_clear_failed", "account_id", account.ID, "error", err)
+		if is7dExceeded {
+			resetAt := s.resolveAnthropicProactiveResetTime(headers, false, true)
+			if resetAt != nil && (account.RateLimitResetAt == nil || resetAt.After(*account.RateLimitResetAt)) {
+				if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
+					slog.Warn("rate_limit_extend_to_7d_on_5h_allowed_failed", "account_id", account.ID, "error", err)
+				} else {
+					slog.Info("rate_limit_extended_to_7d_on_5h_allowed",
+						"account_id", account.ID,
+						"reset_at", *resetAt,
+					)
+				}
+			}
+		} else {
+			if err := s.ClearRateLimit(ctx, account.ID); err != nil {
+				slog.Warn("rate_limit_clear_failed", "account_id", account.ID, "error", err)
+			}
 		}
 	}
 }
