@@ -46,7 +46,7 @@ func NeedsToolContinuation(reqBody map[string]any) bool {
 			continue
 		}
 		itemType, _ := itemMap["type"].(string)
-		if itemType == "function_call_output" || itemType == "item_reference" {
+		if isCodexToolCallItemType(itemType) || itemType == "item_reference" {
 			return true
 		}
 	}

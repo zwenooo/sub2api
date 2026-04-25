@@ -862,6 +862,7 @@ func (s *GatewayService) hashContent(content string) string {
 
 type anthropicCacheControlPayload struct {
 	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 type anthropicSystemTextBlockPayload struct {
@@ -910,7 +911,10 @@ func marshalAnthropicSystemTextBlock(text string, includeCacheControl bool) ([]b
 		Text: text,
 	}
 	if includeCacheControl {
-		block.CacheControl = &anthropicCacheControlPayload{Type: "ephemeral"}
+		block.CacheControl = &anthropicCacheControlPayload{
+			Type: "ephemeral",
+			TTL:  claude.DefaultCacheControlTTL,
+		}
 	}
 	return json.Marshal(block)
 }
@@ -1092,10 +1096,32 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 			modified = true
 		}
 	}
-	if gjson.GetBytes(out, "tool_choice").Exists() {
-		if next, ok := deleteJSONPathBytes(out, "tool_choice"); ok {
-			out = next
-			modified = true
+
+	// context_management：thinking.type 为 enabled/adaptive 时，真实 CLI 会自动
+	// 附带 {"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}。
+	// 客户端显式传了就透传；否则按 CLI 行为补齐。
+	if !gjson.GetBytes(out, "context_management").Exists() {
+		thinkingType := gjson.GetBytes(out, "thinking.type").String()
+		if thinkingType == "enabled" || thinkingType == "adaptive" {
+			const cmDefault = `{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`
+			if next, ok := setJSONRawBytes(out, "context_management", []byte(cmDefault)); ok {
+				out = next
+				modified = true
+			}
+		}
+	}
+
+	// tool_choice：与 Parrot 对齐，不再无条件删除。
+	// - 客户端传了 {"type":"tool","name":"X"} → 保留结构，name 由
+	//   applyToolNameRewriteToBody 同步映射为假名
+	// - 其他形态（auto/any/none）原样透传
+	// 如果 body 里完全没有 tools（空数组），tool_choice 没意义时才删除
+	if !gjson.GetBytes(out, "tools").IsArray() || len(gjson.GetBytes(out, "tools").Array()) == 0 {
+		if gjson.GetBytes(out, "tool_choice").Exists() {
+			if next, ok := deleteJSONPathBytes(out, "tool_choice"); ok {
+				out = next
+				modified = true
+			}
 		}
 	}
 
@@ -4162,17 +4188,20 @@ func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
 		originalSystemText = strings.Join(parts, "\n\n")
 	}
 
-	// 2. 将 system 替换为 Claude Code 标准提示词（array 格式，与真实 Claude Code 一致）
-	//    真实 Claude Code 始终以 [{type: "text", text: "...", cache_control: {type: "ephemeral"}}] 发送 system。
-	//    使用 string 格式会被 Anthropic 检测为第三方应用。
-	claudeCodeSystemBlock := []map[string]any{
-		{
-			"type":          "text",
-			"text":          claudeCodeSystemPrompt,
-			"cache_control": map[string]string{"type": "ephemeral"},
-		},
+	// 2. 构造 system 数组，对齐真实 Claude Code CLI 的 2-block 形态：
+	//    [0] billing attribution block（cc_version={cliVer}.{fp}; cc_entrypoint=cli; cch=00000;）
+	//    [1] "You are Claude Code..." prompt block（带 cache_control 作为稳定缓存断点）
+	//
+	//    billing block 的 cch=00000 是占位符，会被 buildUpstreamRequest 里的
+	//    signBillingHeaderCCH 替换成 xxhash64 签名。缺失 billing block 的系统 payload
+	//    是 Anthropic 判定第三方的关键信号之一（真实 CLI 每个请求都带）。
+	billingBlock, billingErr := buildBillingAttributionBlockJSON(body, claude.CLICurrentVersion)
+	ccPromptBlock, ccErr := marshalAnthropicSystemTextBlock(claudeCodeSystemPrompt, true)
+	if billingErr != nil || ccErr != nil {
+		logger.LegacyPrintf("service.gateway", "Warning: failed to build system blocks (billing=%v, cc=%v)", billingErr, ccErr)
+		return body
 	}
-	out, ok := setJSONValueBytes(body, "system", claudeCodeSystemBlock)
+	out, ok := setJSONRawBytes(body, "system", buildJSONArrayRaw([][]byte{billingBlock, ccPromptBlock}))
 	if !ok {
 		logger.LegacyPrintf("service.gateway", "Warning: failed to set Claude Code system prompt")
 		return body
@@ -4441,6 +4470,18 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 
 		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
+
+		// D/E/F: messages cache 策略 + 工具名混淆 + tools[-1] 断点
+		// 与 forward_as_chat_completions / forward_as_responses 路径对齐，
+		// 保证原生 /v1/messages 路径也经过完整的 Parrot 字段级改写。
+		body = stripMessageCacheControl(body)
+		body = addMessageCacheBreakpoints(body)
+		if rw := buildToolNameRewriteFromBody(body); rw != nil {
+			body = applyToolNameRewriteToBody(body, rw)
+			c.Set(toolNameRewriteKey, rw)
+		} else {
+			body = applyToolsLastCacheBreakpoint(body)
+		}
 	}
 
 	// 强制执行 cache_control 块数量限制（最多 4 个）
@@ -6065,13 +6106,19 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		setHeaderRaw(req.Header, "x-api-key", token)
 	}
 
-	// 白名单透传headers（恢复真实 wire casing）
-	for key, values := range clientHeaders {
-		lowerKey := strings.ToLower(key)
-		if allowedHeaders[lowerKey] {
-			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+	// 白名单透传 headers
+	// OAuth mimicry 路径：跳过客户端 header 透传，与 Parrot 对齐。
+	// Parrot 的 build_upstream_headers 只发 9 个精确 header，不透传任何客户端 header。
+	// 透传客户端 header 会引入不一致的 x-stainless-* / anthropic-beta / user-agent /
+	// x-claude-code-session-id 等值，和我们注入的伪装 header 冲突，被 Anthropic 判 third-party。
+	if tokenType != "oauth" || !mimicClaudeCode {
+		for key, values := range clientHeaders {
+			lowerKey := strings.ToLower(key)
+			if allowedHeaders[lowerKey] {
+				wireKey := resolveWireCasing(key)
+				for _, v := range values {
+					addHeaderRaw(req.Header, wireKey, v)
+				}
 			}
 		}
 	}
@@ -6112,7 +6159,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			// Haiku models are exempt from third-party detection and don't need it.
 			requiredBetas := []string{claude.BetaOAuth, claude.BetaInterleavedThinking}
 			if !strings.Contains(strings.ToLower(modelID), "haiku") {
-				requiredBetas = []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking}
+				requiredBetas = claude.FullClaudeCodeMimicryBetas()
 			}
 			setHeaderRaw(req.Header, "anthropic-beta", mergeAnthropicBetaDropping(requiredBetas, incomingBeta, effectiveDropSet))
 		} else {
@@ -8707,6 +8754,14 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if shouldMimicClaudeCode {
 		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: true}
 		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
+
+		body = stripMessageCacheControl(body)
+		body = addMessageCacheBreakpoints(body)
+		if rw := buildToolNameRewriteFromBody(body); rw != nil {
+			body = applyToolNameRewriteToBody(body, rw)
+		} else {
+			body = applyToolsLastCacheBreakpoint(body)
+		}
 	}
 
 	// Antigravity 账户不支持 count_tokens，返回 404 让客户端 fallback 到本地估算。
@@ -9135,7 +9190,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			applyClaudeCodeMimicHeaders(req, false)
 
 			incomingBeta := getHeaderRaw(req.Header, "anthropic-beta")
-			requiredBetas := []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaTokenCounting}
+			requiredBetas := append(claude.FullClaudeCodeMimicryBetas(), claude.BetaTokenCounting)
 			setHeaderRaw(req.Header, "anthropic-beta", mergeAnthropicBetaDropping(requiredBetas, incomingBeta, ctEffectiveDropSet))
 		} else {
 			clientBetaHeader := getHeaderRaw(req.Header, "anthropic-beta")

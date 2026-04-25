@@ -28,6 +28,7 @@ type OpenAIAccountScheduleRequest struct {
 	PreviousResponseID string
 	RequestedModel     string
 	RequiredTransport  OpenAIUpstreamTransport
+	RequireCompact     bool
 	ExcludedIDs        map[int64]struct{}
 }
 
@@ -973,6 +974,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	requestedModel string,
 	excludedIDs map[int64]struct{},
 	requiredTransport OpenAIUpstreamTransport,
+	requireCompact bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
 	scheduler := s.getOpenAIAccountScheduler()
@@ -996,6 +998,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		PreviousResponseID: previousResponseID,
 		RequestedModel:     requestedModel,
 		RequiredTransport:  requiredTransport,
+		RequireCompact:     requireCompact,
 		ExcludedIDs:        excludedIDs,
 	})
 }

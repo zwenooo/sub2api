@@ -670,6 +670,110 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 	return requestedModel, false
 }
 
+func stringMappingFromRaw(raw any) map[string]string {
+	switch mapping := raw.(type) {
+	case map[string]any:
+		if len(mapping) == 0 {
+			return nil
+		}
+		result := make(map[string]string, len(mapping))
+		for key, value := range mapping {
+			if str, ok := value.(string); ok {
+				result[key] = str
+			}
+		}
+		if len(result) == 0 {
+			return nil
+		}
+		return result
+	case map[string]string:
+		if len(mapping) == 0 {
+			return nil
+		}
+		result := make(map[string]string, len(mapping))
+		for key, value := range mapping {
+			result[key] = value
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+const (
+	OpenAICompactModeAuto     = "auto"
+	OpenAICompactModeForceOn  = "force_on"
+	OpenAICompactModeForceOff = "force_off"
+)
+
+func normalizeOpenAICompactMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case OpenAICompactModeForceOn:
+		return OpenAICompactModeForceOn
+	case OpenAICompactModeForceOff:
+		return OpenAICompactModeForceOff
+	default:
+		return OpenAICompactModeAuto
+	}
+}
+
+func (a *Account) GetOpenAICompactMode() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return OpenAICompactModeAuto
+	}
+	mode, _ := a.Extra["openai_compact_mode"].(string)
+	return normalizeOpenAICompactMode(mode)
+}
+
+func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() {
+		return false, false
+	}
+	switch a.GetOpenAICompactMode() {
+	case OpenAICompactModeForceOn:
+		return true, true
+	case OpenAICompactModeForceOff:
+		return false, true
+	}
+	if a.Extra == nil {
+		return false, false
+	}
+	supported, ok := a.Extra["openai_compact_supported"].(bool)
+	if !ok {
+		return false, false
+	}
+	return supported, true
+}
+
+func (a *Account) AllowsOpenAICompact() bool {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
+	supported, known := a.OpenAICompactSupportKnown()
+	if !known {
+		return true
+	}
+	return supported
+}
+
+func (a *Account) GetCompactModelMapping() map[string]string {
+	if a == nil || a.Credentials == nil {
+		return nil
+	}
+	return stringMappingFromRaw(a.Credentials["compact_model_mapping"])
+}
+
+func (a *Account) ResolveCompactMappedModel(requestedModel string) (mappedModel string, matched bool) {
+	mapping := a.GetCompactModelMapping()
+	if len(mapping) == 0 {
+		return requestedModel, false
+	}
+	if mappedModel, matched := resolveRequestedModelInMapping(mapping, requestedModel); matched {
+		return mappedModel, true
+	}
+	return requestedModel, false
+}
+
 func (a *Account) GetBaseURL() string {
 	if a.Type != AccountTypeAPIKey {
 		return ""

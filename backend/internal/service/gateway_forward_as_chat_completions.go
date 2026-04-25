@@ -90,9 +90,25 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 
 	if shouldMimicClaudeCode {
+		systemRewritten := false
 		if !strings.Contains(strings.ToLower(mappedModel), "haiku") &&
 			!systemIncludesClaudeCodePrompt(anthropicReq.System) {
-			anthropicBody = injectClaudeCodePrompt(anthropicBody, anthropicReq.System)
+			anthropicBody = rewriteSystemForNonClaudeCode(anthropicBody, anthropicReq.System)
+			systemRewritten = true
+		}
+
+		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: !systemRewritten}
+		anthropicBody, _ = normalizeClaudeOAuthRequestBody(anthropicBody, mappedModel, normalizeOpts)
+
+		anthropicBody = stripMessageCacheControl(anthropicBody)
+		anthropicBody = addMessageCacheBreakpoints(anthropicBody)
+		if rw := buildToolNameRewriteFromBody(anthropicBody); rw != nil {
+			anthropicBody = applyToolNameRewriteToBody(anthropicBody, rw)
+			if c != nil {
+				c.Set(toolNameRewriteKey, rw)
+			}
+		} else {
+			anthropicBody = applyToolsLastCacheBreakpoint(anthropicBody)
 		}
 	}
 
