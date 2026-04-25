@@ -4408,6 +4408,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				if hadBufferedData {
 					logger.LegacyPrintf("service.openai_gateway", "Client disconnected during final flush, returning collected usage")
 				}
+			} else if hadBufferedData {
+				clientOutputStarted = true
 			}
 		}
 		return resultWithUsage(), nil
@@ -4445,19 +4447,23 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", scanErr), true
 	}
 	processSSELine := func(line string, queueDrained bool) {
+		if streamFailoverErr != nil {
+			return
+		}
 		lastDataAt = time.Now()
 
-		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 
-			// Replace model in response if needed.
-			// Fast path: most events do not contain model field values.
 			if needModelReplace && mappedModel != "" && strings.Contains(data, mappedModel) {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 			}
 
 			dataBytes := []byte(data)
-			eventType := strings.TrimSpace(gjson.Get(data, "type").String())
+			if openAIStreamEventIsTerminal(data) {
+				sawTerminalEvent = true
+			}
+			eventType := strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+			forceFlushFailedEvent := false
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
@@ -4465,22 +4471,21 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, dataBytes, failedMessage)
 					return
 				}
+				forceFlushFailedEvent = true
 				sawFailedEvent = true
-			}
-			if openAIStreamEventIsTerminal(data) {
-				sawTerminalEvent = true
 			}
 
 			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
 				dataBytes = correctedData
 				data = string(correctedData)
 				line = "data: " + data
+				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
 			}
+			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
 
-			lineStartsOutput := openAIStreamDataStartsClientOutput(data, eventType)
 			if !clientDisconnected {
-				shouldFlush := queueDrained
-				if firstTokenMs == nil && lineStartsOutput && data != "[DONE]" {
+				shouldFlush := queueDrained && (clientOutputStarted || startsClientOutput)
+				if firstTokenMs == nil && startsClientOutput {
 					shouldFlush = true
 				}
 				if _, err := bufferedWriter.WriteString(line); err != nil {
@@ -4493,14 +4498,15 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					if err := flushBuffered(); err != nil {
 						clientDisconnected = true
 						logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming flush, continuing to drain upstream for billing")
+					} else {
+						clientOutputStarted = true
 					}
 				}
 			}
 
-			if firstTokenMs == nil && lineStartsOutput && data != "[DONE]" {
+			if firstTokenMs == nil && startsClientOutput {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
-				clientOutputStarted = true
 			}
 			s.parseSSEUsageBytes(dataBytes, usage)
 			return
