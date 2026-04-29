@@ -293,8 +293,9 @@ func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *Ope
 		}
 	}
 	if info := fetchChatGPTAccountInfo(ctx, s.privacyClientFactory, tokenInfo.AccessToken, proxyURL, orgID); info != nil {
-		// plan_type: JWT id_token 是权威来源（CPA 验证），backend-api 仅在 JWT 未提供时补充
-		if info.PlanType != "" && tokenInfo.PlanType == "" {
+		// backend-api accounts/check 是 plan_type 的权威来源（JWT 在账号降级后不更新）
+		if info.PlanType != "" {
+			slog.Info("openai_oauth_enrich_plan_type", "jwt_plan_type", tokenInfo.PlanType, "api_plan_type", info.PlanType)
 			tokenInfo.PlanType = info.PlanType
 		}
 		if info.SubscriptionExpiresAt != "" {
