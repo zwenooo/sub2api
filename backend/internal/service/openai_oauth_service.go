@@ -218,15 +218,27 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 		return nil, err
 	}
 
-	// Parse ID token to get user info
+	slog.Info("openai_oauth_refresh_response",
+		"has_id_token", tokenResp.IDToken != "",
+		"has_access_token", tokenResp.AccessToken != "",
+		"has_refresh_token", tokenResp.RefreshToken != "",
+		"id_token_len", len(tokenResp.IDToken))
+
+	// Parse ID token to get user info — use DecodeIDToken (skip exp check) like CLIProxyAPI
 	var userInfo *openai.UserInfo
 	if tokenResp.IDToken != "" {
-		claims, parseErr := openai.ParseIDToken(tokenResp.IDToken)
+		claims, parseErr := openai.DecodeIDToken(tokenResp.IDToken)
 		if parseErr != nil {
-			slog.Warn("openai_oauth_id_token_parse_failed", "error", parseErr)
+			slog.Warn("openai_oauth_id_token_decode_failed", "error", parseErr)
 		} else {
 			userInfo = claims.GetUserInfo()
+			slog.Info("openai_oauth_jwt_plan_type",
+				"plan_type", userInfo.PlanType,
+				"email", userInfo.Email,
+				"subscription_expires_at", userInfo.SubscriptionExpiresAt)
 		}
+	} else {
+		slog.Warn("openai_oauth_refresh_no_id_token")
 	}
 
 	tokenInfo := &OpenAITokenInfo{
@@ -250,6 +262,8 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 	}
 
 	s.enrichTokenInfo(ctx, tokenInfo, proxyURL)
+
+	slog.Info("openai_oauth_refresh_final", "plan_type", tokenInfo.PlanType, "subscription_expires_at", tokenInfo.SubscriptionExpiresAt)
 
 	return tokenInfo, nil
 }
