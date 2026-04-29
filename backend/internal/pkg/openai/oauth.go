@@ -255,12 +255,13 @@ type IDTokenClaims struct {
 
 // OpenAIAuthClaims represents the OpenAI specific auth claims
 type OpenAIAuthClaims struct {
-	ChatGPTAccountID string              `json:"chatgpt_account_id"`
-	ChatGPTUserID    string              `json:"chatgpt_user_id"`
-	ChatGPTPlanType  string              `json:"chatgpt_plan_type"`
-	UserID           string              `json:"user_id"`
-	POID             string              `json:"poid"` // organization ID in access_token JWT
-	Organizations    []OrganizationClaim `json:"organizations"`
+	ChatGPTAccountID               string              `json:"chatgpt_account_id"`
+	ChatGPTUserID                  string              `json:"chatgpt_user_id"`
+	ChatGPTPlanType                string              `json:"chatgpt_plan_type"`
+	ChatGPTSubscriptionActiveUntil any                 `json:"chatgpt_subscription_active_until"`
+	UserID                         string              `json:"user_id"`
+	POID                           string              `json:"poid"` // organization ID in access_token JWT
+	Organizations                  []OrganizationClaim `json:"organizations"`
 }
 
 // OrganizationClaim represents an organization in the ID Token
@@ -374,13 +375,14 @@ func ParseIDToken(idToken string) (*IDTokenClaims, error) {
 
 // UserInfo represents user information extracted from ID Token claims.
 type UserInfo struct {
-	Email            string
-	ChatGPTAccountID string
-	ChatGPTUserID    string
-	PlanType         string
-	UserID           string
-	OrganizationID   string
-	Organizations    []OrganizationClaim
+	Email                 string
+	ChatGPTAccountID      string
+	ChatGPTUserID         string
+	PlanType              string
+	SubscriptionExpiresAt string
+	UserID                string
+	OrganizationID        string
+	Organizations         []OrganizationClaim
 }
 
 // GetUserInfo extracts user info from ID Token claims
@@ -395,6 +397,7 @@ func (c *IDTokenClaims) GetUserInfo() *UserInfo {
 		info.PlanType = c.OpenAIAuth.ChatGPTPlanType
 		info.UserID = c.OpenAIAuth.UserID
 		info.Organizations = c.OpenAIAuth.Organizations
+		info.SubscriptionExpiresAt = parseSubscriptionActiveUntil(c.OpenAIAuth.ChatGPTSubscriptionActiveUntil)
 
 		// Get default organization ID
 		for _, org := range c.OpenAIAuth.Organizations {
@@ -410,4 +413,35 @@ func (c *IDTokenClaims) GetUserInfo() *UserInfo {
 	}
 
 	return info
+}
+
+// parseSubscriptionActiveUntil converts the chatgpt_subscription_active_until JWT claim
+// (which can be a Unix timestamp float64, an ISO date string, or nil) into an RFC3339 string.
+func parseSubscriptionActiveUntil(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case float64:
+		if val <= 0 {
+			return ""
+		}
+		return time.Unix(int64(val), 0).UTC().Format(time.RFC3339)
+	case json.Number:
+		if f, err := val.Float64(); err == nil && f > 0 {
+			return time.Unix(int64(f), 0).UTC().Format(time.RFC3339)
+		}
+	case string:
+		if strings.TrimSpace(val) == "" {
+			return ""
+		}
+		if t, err := time.Parse(time.RFC3339, val); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+		if t, err := time.Parse("2006-01-02T15:04:05-07:00", val); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+		return strings.TrimSpace(val)
+	}
+	return ""
 }

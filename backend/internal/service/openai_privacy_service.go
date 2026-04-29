@@ -150,13 +150,13 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 		}
 	}
 
-	// 未匹配到时，遍历所有账号：优先 is_default，次选非 free
+	// 未匹配到时，遍历所有账号：优先 is_default，否则取第一个
 	if info.PlanType == "" {
 		type candidate struct {
 			planType  string
 			expiresAt string
 		}
-		var defaultC, paidC, anyC candidate
+		var defaultC, anyC candidate
 		for _, acctRaw := range accounts {
 			acct, ok := acctRaw.(map[string]any)
 			if !ok {
@@ -175,16 +175,11 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 					defaultC = candidate{planType, ea}
 				}
 			}
-			if !strings.EqualFold(planType, "free") && paidC.planType == "" {
-				paidC = candidate{planType, ea}
-			}
 		}
-		// 优先级：default > 非 free > 任意
+		// 优先级：default > 任意（不再偏向 paid，避免已降级 free 的账号被误判为 pro）
 		switch {
 		case defaultC.planType != "":
 			info.PlanType, info.SubscriptionExpiresAt = defaultC.planType, defaultC.expiresAt
-		case paidC.planType != "":
-			info.PlanType, info.SubscriptionExpiresAt = paidC.planType, paidC.expiresAt
 		default:
 			info.PlanType, info.SubscriptionExpiresAt = anyC.planType, anyC.expiresAt
 		}

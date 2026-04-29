@@ -198,6 +198,7 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		tokenInfo.ChatGPTUserID = userInfo.ChatGPTUserID
 		tokenInfo.OrganizationID = userInfo.OrganizationID
 		tokenInfo.PlanType = userInfo.PlanType
+		tokenInfo.SubscriptionExpiresAt = userInfo.SubscriptionExpiresAt
 	}
 
 	s.enrichTokenInfo(ctx, tokenInfo, proxyURL)
@@ -245,6 +246,7 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 		tokenInfo.ChatGPTUserID = userInfo.ChatGPTUserID
 		tokenInfo.OrganizationID = userInfo.OrganizationID
 		tokenInfo.PlanType = userInfo.PlanType
+		tokenInfo.SubscriptionExpiresAt = userInfo.SubscriptionExpiresAt
 	}
 
 	s.enrichTokenInfo(ctx, tokenInfo, proxyURL)

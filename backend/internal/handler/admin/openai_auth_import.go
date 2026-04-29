@@ -208,6 +208,7 @@ func buildOpenAIAuthImportAccountInput(ctx context.Context, payload map[string]a
 	email := openAIAuthImportString(payload, "email")
 	planType := openAIAuthImportString(payload, "plan_type")
 	organizationID := openAIAuthImportString(payload, "organization_id")
+	subscriptionExpiresAt := openAIAuthImportString(payload, "subscription_expires_at")
 	chatGPTUserID := openAIAuthImportString(payload, "chatgpt_user_id")
 	chatGPTAccountID := openAIAuthImportString(payload, "chatgpt_account_id")
 	if chatGPTAccountID == "" {
@@ -257,6 +258,9 @@ func buildOpenAIAuthImportAccountInput(ctx context.Context, payload map[string]a
 		if trimmed := strings.TrimSpace(refreshed.ChatGPTAccountID); trimmed != "" {
 			chatGPTAccountID = trimmed
 		}
+		if trimmed := strings.TrimSpace(refreshed.SubscriptionExpiresAt); trimmed != "" {
+			subscriptionExpiresAt = trimmed
+		}
 	}
 
 	if accessToken == "" && idToken != "" {
@@ -286,6 +290,9 @@ func buildOpenAIAuthImportAccountInput(ctx context.Context, payload map[string]a
 	}
 	if organizationID != "" {
 		credentials["organization_id"] = organizationID
+	}
+	if subscriptionExpiresAt != "" {
+		credentials["subscription_expires_at"] = subscriptionExpiresAt
 	}
 	if chatGPTUserID != "" {
 		credentials["chatgpt_user_id"] = chatGPTUserID
@@ -354,6 +361,9 @@ func overwriteOpenAIAuthImportPlanTypeFromIDToken(item *DataAccount) {
 	}
 	if strings.TrimSpace(userInfo.PlanType) != "" {
 		item.Credentials["plan_type"] = strings.TrimSpace(userInfo.PlanType)
+	}
+	if strings.TrimSpace(userInfo.SubscriptionExpiresAt) != "" {
+		item.Credentials["subscription_expires_at"] = strings.TrimSpace(userInfo.SubscriptionExpiresAt)
 	}
 }
 
